@@ -32,7 +32,7 @@ const MERCHANT_NOISE = new Set([
   'purchases', 'transaction', 'transactions', 'debit', 'credit', 'card',
   'visa', 'mastercard', 'pos', 'web', 'mobile', 'recurring', 'subscription',
   'monthly', 'autopay', 'bill', 'bank', 'transfer', 'approved', 'auth',
-  'authorization', 'terminal'
+  'authorization', 'terminal', 'com', 'net', 'org', 'www', 'io', 'pymt', 'svc'
 ]);
 
 function normalizeHeader(value) {

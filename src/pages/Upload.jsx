@@ -1,10 +1,10 @@
 import React, { useRef, useState } from 'react';
 import Papa from 'papaparse';
-import { parseTransactions, detectRecurring } from '../lib/parser';
+import { parseTransactionsDetailed, detectRecurring } from '../lib/parser';
 import Icon from '../Icon';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const sampleCsv = 'data:text/csv;charset=utf-8,Date%2CDescription%2CAmount%0A2026-01-10%2CNetflix%2C15.99%0A2026-02-10%2CNetflix%2C15.99%0A2026-03-10%2CNetflix%2C15.99%0A2026-01-05%2CSpotify%2C10.99%0A2026-02-05%2CSpotify%2C10.99%0A2026-03-05%2CSpotify%2C10.99%0A2026-02-18%2CGrocery%20Store%2C54.20';
+const sampleCsv = 'data:text/csv;charset=utf-8,Date%2CDescription%2CAmount%0A2026-01-10%2CNetflix%2C-15.99%0A2026-02-10%2CNetflix%2C-15.99%0A2026-03-10%2CNetflix%2C-15.99%0A2026-01-05%2CSpotify%2C-10.99%0A2026-02-05%2CSpotify%2C-10.99%0A2026-03-05%2CSpotify%2C-10.99%0A2026-02-18%2CGrocery%20Store%2C-54.20';
 
 export default function Upload({ onResult }) {
   const inputRef = useRef(null);
@@ -53,7 +53,9 @@ export default function Upload({ onResult }) {
           throw new Error('No transaction rows were found in this CSV.');
         }
 
-        const transactions = parseTransactions(parsed.data);
+        const parsedTransactions = parseTransactionsDetailed(parsed.data);
+        const transactions = parsedTransactions.transactions;
+        const summary = parsedTransactions.summary;
         if (!transactions.length) {
           throw new Error('No usable transaction rows were found. Check your CSV columns and try again.');
         }
@@ -64,11 +66,13 @@ export default function Upload({ onResult }) {
           fileName: file.name,
           transactionCount: transactions.length,
           detectedCount: detected.length,
+          summary,
         });
         onResult({
           subscriptions: detected,
           transactionCount: transactions.length,
           fileName: file.name,
+          summary,
         });
       } catch (caughtError) {
         setError(caughtError instanceof Error ? caughtError.message : 'We could not read this CSV. Check its format and try again.');
@@ -135,15 +139,34 @@ export default function Upload({ onResult }) {
         </div>
       )}
 
+      {importInfo?.summary && (
+        importInfo.summary.duplicateRows > 0 ||
+        importInfo.summary.invalidDateRows > 0 ||
+        importInfo.summary.ambiguousDateRows > 0 ||
+        importInfo.summary.unknownDirectionRows > 0 ||
+        importInfo.summary.invalidAmountRows > 0
+      ) && (
+        <div className="feedback-message warning-message" role="status">
+          <Icon name="info" size={17} />
+          <span>
+            {importInfo.summary.duplicateRows > 0 && `${importInfo.summary.duplicateRows} exact duplicate rows ignored. `}
+            {importInfo.summary.invalidDateRows > 0 && `${importInfo.summary.invalidDateRows} row(s) had dates that could not be parsed and will not count toward recurrence detection. `}
+            {importInfo.summary.ambiguousDateRows > 0 && `${importInfo.summary.ambiguousDateRows} date(s) were ambiguous; CleanSub used day-first interpretation. Review dates before relying on a match. `}
+            {importInfo.summary.unknownDirectionRows > 0 && `${importInfo.summary.unknownDirectionRows} amount(s) had no clear debit/credit direction, so related matches cannot be high confidence. `}
+            {importInfo.summary.invalidAmountRows > 0 && `${importInfo.summary.invalidAmountRows} row(s) with invalid amounts were skipped.`}
+          </span>
+        </div>
+      )}
+
       {preview.length > 0 && (
         <div className="preview-block">
           <div className="preview-heading"><div><strong>Quick preview</strong><span>First {preview.length} transaction rows</span></div><span className="preview-file"><Icon name="file" size={14} />{importInfo ? importInfo.fileName : 'CSV file'}</span></div>
           <div className="preview-table-wrap">
             <table className="data-table preview-table">
-              <thead><tr><th>Date</th><th>Description</th><th className="align-right">Amount</th></tr></thead>
+              <thead><tr><th>Date</th><th>Description</th><th className="align-right">Amount / direction</th></tr></thead>
               <tbody>
                 {preview.map((row, index) => (
-                  <tr key={index}><td>{row.date || '—'}</td><td>{row.payee}</td><td className="align-right">{Number(row.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</td></tr>
+                  <tr key={index}><td>{row.date || '—'}</td><td>{row.payee}</td><td className="align-right">{row.direction === 'outflow' ? '− ' : row.direction === 'inflow' ? '+ ' : '? '}{Number(row.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</td></tr>
                 ))}
               </tbody>
             </table>

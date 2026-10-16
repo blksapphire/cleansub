@@ -98,3 +98,13 @@ test('flags ambiguous numeric dates when the file provides no date-order evidenc
 test('normalizes card boilerplate and reference codes out of merchant labels', () => {
   assert.equal(normalizeMerchant('POS CARD PURCHASE Netflix.com REF: 123456789'), 'netflix');
 });
+
+test('does not merge distinct same-day charges with different source references', () => {
+  const { transactions, summary } = parseTransactionsDetailed([
+    { Date: '2026-01-10', Description: 'Coffee Shop', Amount: '-5.00', Reference: 'ABC001' },
+    { Date: '2026-01-10', Description: 'Coffee Shop', Amount: '-5.00', Reference: 'ABC002' }
+  ]);
+
+  assert.equal(summary.duplicateRows, 0);
+  assert.equal(transactions.length, 2);
+});

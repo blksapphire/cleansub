@@ -101,7 +101,7 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                         </div>
                       </td>
                       <td><strong className="amount-cell">{formatCurrency(item.estimatedMonthly, currency)}</strong><small className="table-subtext">per month, est.</small></td>
-                      {!compact && <td><span className="interval-cell"><Icon name="clock" size={14} />{intervalLabel(item.medianIntervalDays)}</span></td>}
+                      {!compact && <td><span className="interval-cell"><Icon name="clock" size={14} />{item.frequency || intervalLabel(item.medianIntervalDays)}</span></td>}
                       {!compact && <td className="occurrences-cell">{item.count || 0} <span>times</span></td>}
                       <td><span className={'confidence-pill confidence-' + confidence.toLowerCase()}><span />{confidenceLabel(confidence)}</span></td>
                       <td className="actions-column"><button className={'row-action ' + (isOpen ? 'is-open' : '')} onClick={() => setOpenHelp(isOpen ? null : key)} aria-expanded={isOpen}>{isOpen ? 'Hide' : 'Guide'}<Icon name="chevron" size={14} /></button></td>
@@ -115,6 +115,11 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                               <strong>Before you change {item.payee || 'this subscription'}</strong>
                               <p>Confirm the charge in the merchant's official account or billing settings. If you don't recognize it, contact the merchant using a trusted website or phone number. For an unauthorized card charge, contact your bank or card provider.</p>
                               <small>CleanSub does not cancel payments or verify the merchant's cancellation policy.</small>
+                              {Array.isArray(item.reasons) && item.reasons.length > 0 && (
+                                <ul className="detection-reasons">
+                                  {item.reasons.map((reason, reasonIndex) => <li key={reasonIndex}>{reason}</li>)}
+                                </ul>
+                              )}
                             </div>
                           </div>
                         </td>

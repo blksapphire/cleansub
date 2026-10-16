@@ -126,6 +126,9 @@ function parseMoney(value) {
     const parts = text.split('.');
     const finalPart = parts.pop();
     text = parts.join('') + (finalPart.length > 0 && finalPart.length <= 2 ? '.' + finalPart : finalPart);
+  } else if (lastDot !== -1 && text.length - lastDot - 1 === 3) {
+    // Three trailing digits are far more commonly a thousands group than currency precision.
+    text = text.replace(/\./g, '');
   }
 
   const parsed = Number(text);
@@ -287,7 +290,7 @@ export function parseTransactionsDetailed(rows, options = {}) {
     const debitMagnitude = debitRaw ? debitRaw.magnitude : 0;
     const creditMagnitude = creditRaw ? creditRaw.magnitude : 0;
 
-    if (columns.debit && columns.credit && (debitMagnitude > 0 || creditMagnitude > 0)) {
+    if ((columns.debit || columns.credit) && (debitMagnitude > 0 || creditMagnitude > 0)) {
       amountSource = 'debit-credit-columns';
       if (debitMagnitude > 0 && creditMagnitude === 0) {
         amount = debitMagnitude;

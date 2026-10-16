@@ -361,3 +361,7 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.warning-message { color: #77663d; border: 1px solid #efe3c3; background: #fffcf4; }
+.detection-reasons { margin: 9px 0 0; padding-left: 16px; color: #81938a; font-size: 9px; line-height: 1.7; }
+.detection-reasons li::marker { color: #6a9c88; }

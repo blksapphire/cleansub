@@ -356,6 +356,10 @@ export function parseTransactionsDetailed(rows, options = {}) {
         ? amount
         : (originalMoney?.signed ?? amount);
     const currency = columns.currency ? asText(valueAt(row, columns.currency)).toUpperCase() : '';
+    const sourceSignature = Object.keys(row)
+      .sort((left, right) => normalizeHeader(left).localeCompare(normalizeHeader(right)))
+      .map((key) => [normalizeHeader(key), asText(row[key])].join('='))
+      .join(String.fromCharCode(31));
 
     transactions.push({
       date: parsedDate.date,
@@ -368,7 +372,8 @@ export function parseTransactionsDetailed(rows, options = {}) {
       direction,
       directionSource,
       amountSource,
-      currency
+      currency,
+      sourceSignature
     });
   }
 
@@ -376,7 +381,7 @@ export function parseTransactionsDetailed(rows, options = {}) {
   let duplicateRows = 0;
   const deduplicated = transactions.filter((transaction) => {
     const dateKey = transaction.date || normalizeDescription(transaction.dateRaw);
-    const key = [
+    const key = transaction.sourceSignature || [
       dateKey,
       normalizeDescription(transaction.payee),
       transaction.amount.toFixed(2),
@@ -390,6 +395,8 @@ export function parseTransactionsDetailed(rows, options = {}) {
     seen.add(key);
     return true;
   });
+
+  deduplicated.forEach((transaction) => { delete transaction.sourceSignature; });
 
   if (!deduplicated.length) {
     throw new Error('No usable transactions were found. Check that your CSV contains dates, merchant descriptions, and non-zero amounts.');

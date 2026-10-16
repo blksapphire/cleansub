@@ -176,14 +176,14 @@ function inferDateOrder(values) {
     if (first > 12 && second <= 12) dmy += 1;
     if (second > 12 && first <= 12) mdy += 1;
   }
-  if (dmy > mdy) return 'DMY';
-  if (mdy > dmy) return 'MDY';
-  // Day-first is the default for ambiguous numeric dates. Use options.dateOrder
-  // to override it when importing an MM/DD/YYYY bank export.
-  return 'DMY';
+  if (dmy > mdy) return { order: 'DMY', confident: true };
+  if (mdy > dmy) return { order: 'MDY', confident: true };
+  // Day-first is the default where the file offers no evidence. Ambiguous rows
+  // remain marked so confidence is not overstated.
+  return { order: 'DMY', confident: false };
 }
 
-function parseDate(value, dateOrder) {
+function parseDate(value, dateOrder, dateOrderCertain) {
   const raw = asText(value);
   if (!raw) return { date: '', ambiguous: false };
 
@@ -194,7 +194,7 @@ function parseDate(value, dateOrder) {
   if (match) {
     const first = Number(match[1]);
     const second = Number(match[2]);
-    const ambiguous = first <= 12 && second <= 12;
+    const ambiguous = first <= 12 && second <= 12 && !dateOrderCertain;
     const order = first > 12 ? 'DMY' : second > 12 ? 'MDY' : dateOrder;
     const month = order === 'MDY' ? first : second;
     const day = order === 'MDY' ? second : first;
@@ -251,9 +251,11 @@ export function parseTransactionsDetailed(rows, options = {}) {
 
   const rawDates = nonBlankRows.map((row) => valueAt(row, columns.date));
   const requestedOrder = String(options.dateOrder || 'auto').toUpperCase();
-  const inferredOrder = requestedOrder === 'MDY' || requestedOrder === 'DMY'
-    ? requestedOrder
+  const explicitDateOrder = requestedOrder === 'MDY' || requestedOrder === 'DMY';
+  const dateOrderInfo = explicitDateOrder
+    ? { order: requestedOrder, confident: true }
     : inferDateOrder(rawDates);
+  const inferredOrder = dateOrderInfo.order;
 
   const transactions = [];
   let missingPayeeRows = 0;
@@ -271,7 +273,7 @@ export function parseTransactionsDetailed(rows, options = {}) {
     }
 
     const dateRaw = asText(valueAt(row, columns.date));
-    const parsedDate = parseDate(dateRaw, inferredOrder);
+    const parsedDate = parseDate(dateRaw, inferredOrder, dateOrderInfo.confident);
     if (!parsedDate.date) invalidDateRows += 1;
     if (parsedDate.ambiguous) ambiguousDateRows += 1;
 
@@ -402,7 +404,8 @@ export function parseTransactionsDetailed(rows, options = {}) {
       invalidDateRows,
       ambiguousDateRows,
       unknownDirectionRows,
-      dateOrderUsed: inferredOrder
+      dateOrderUsed: inferredOrder,
+      dateOrderInferred: !explicitDateOrder && dateOrderInfo.confident
     }
   };
 }

@@ -1,27 +1,41 @@
-import React, { useRef, useState } from 'react';
-import Papa from 'papaparse';
-import { parseTransactionsDetailed, detectRecurring } from '../lib/parser';
+import React, { useState } from 'react';
+import { runAnalysis } from '../lib/runAnalysis';
+import { fileKind, readXlsxMatrix, readPdfMatrix, MAX_FILE_SIZE } from '../lib/importers';
 import Icon from '../Icon';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const sampleCsv = 'data:text/csv;charset=utf-8,Date%2CDescription%2CAmount%0A2026-01-10%2CNetflix%2C-15.99%0A2026-02-10%2CNetflix%2C-15.99%0A2026-03-10%2CNetflix%2C-15.99%0A2026-01-05%2CSpotify%2C-10.99%0A2026-02-05%2CSpotify%2C-10.99%0A2026-03-05%2CSpotify%2C-10.99%0A2026-02-18%2CGrocery%20Store%2C-54.20';
+const sampleCsv = 'data:text/csv;charset=utf-8,Date%2CDescription%2CAmount%0A2026-01-10%2CNetflix%2C-15.99%0A2026-02-10%2CNetflix%2C-15.99%0A2026-03-10%2CNetflix%2C-18.99%0A2026-04-10%2CNetflix%2C-18.99%0A2026-01-05%2CSpotify%2C-10.99%0A2026-02-05%2CSpotify%2C-10.99%0A2026-03-05%2CSpotify%2C-10.99%0A2026-04-05%2CSpotify%2C-10.99%0A2026-02-18%2CGrocery%20Store%2C-54.20%0A2026-03-02%2CDisney%20Plus%2C-1.00%0A2026-03-16%2CDisney%20Plus%2C-9.99%0A2026-04-16%2CDisney%20Plus%2C-9.99';
+
+const KIND_LABEL = { csv: 'CSV', xlsx: 'Excel', pdf: 'PDF' };
 
 export default function Upload({ onResult }) {
-  const inputRef = useRef(null);
   const [error, setError] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [preview, setPreview] = useState([]);
-  const [importInfo, setImportInfo] = useState(null);
+  const [loadingLabel, setLoadingLabel] = useState('');
+  const [current, setCurrent] = useState(null); // { payload, fileName, kind }
+  const [result, setResult] = useState(null);
 
-  function processFile(file) {
+  async function analyse(payload, fileName, kind, options = {}) {
+    const response = await runAnalysis({ ...payload, options, source: kind });
+    setCurrent({ payload, fileName, kind });
+    setResult(response);
+    onResult({ ...response, fileName });
+    return response;
+  }
+
+  async function processFile(file) {
     if (!file) return;
     setError('');
-    setImportInfo(null);
-    setPreview([]);
+    setResult(null);
+    setCurrent(null);
 
-    if (!file.name.toLowerCase().endsWith('.csv') && file.type !== 'text/csv') {
-      setError('Please choose a CSV file exported from your bank or card provider.');
+    const kind = fileKind(file);
+    if (kind === 'xls') {
+      setError('Old .xls workbooks are not supported. In Excel, choose Save As > .xlsx (or CSV) and try again.');
+      return;
+    }
+    if (kind === 'unknown') {
+      setError('Please choose a CSV, Excel (.xlsx) or text-based PDF statement.');
       return;
     }
     if (file.size > MAX_FILE_SIZE) {
@@ -29,59 +43,40 @@ export default function Upload({ onResult }) {
       return;
     }
     if (file.size === 0) {
-      setError('This file is empty. Choose a CSV with transaction rows.');
+      setError('This file is empty. Choose a statement with transaction rows.');
       return;
     }
 
     setIsLoading(true);
-    const reader = new FileReader();
-
-    reader.onerror = () => {
-      setError('We could not read that file. Please try selecting it again.');
-      setIsLoading(false);
-    };
-
-    reader.onload = () => {
-      try {
-        const parsed = Papa.parse(String(reader.result || ''), {
-          header: true,
-          skipEmptyLines: true,
-          transformHeader: (header) => header.trim(),
-        });
-
-        if (!parsed.data || parsed.data.length === 0) {
-          throw new Error('No transaction rows were found in this CSV.');
-        }
-
-        const parsedTransactions = parseTransactionsDetailed(parsed.data);
-        const transactions = parsedTransactions.transactions;
-        const summary = parsedTransactions.summary;
-        if (!transactions.length) {
-          throw new Error('No usable transaction rows were found. Check your CSV columns and try again.');
-        }
-
-        const detected = detectRecurring(transactions);
-        setPreview(transactions.slice(0, 4));
-        setImportInfo({
-          fileName: file.name,
-          transactionCount: transactions.length,
-          detectedCount: detected.length,
-          summary,
-        });
-        onResult({
-          subscriptions: detected,
-          transactionCount: transactions.length,
-          fileName: file.name,
-          summary,
-        });
-      } catch (caughtError) {
-        setError(caughtError instanceof Error ? caughtError.message : 'We could not read this CSV. Check its format and try again.');
-      } finally {
-        setIsLoading(false);
+    setLoadingLabel(kind === 'pdf' ? 'Reading PDF text on this device…' : 'Reading your statement…');
+    try {
+      if (kind === 'csv') {
+        const buffer = await file.arrayBuffer();
+        await analyse({ kind: 'csv', buffer }, file.name, kind);
+      } else {
+        const matrix = kind === 'xlsx'
+          ? await readXlsxMatrix(file)
+          : (await readPdfMatrix(await file.arrayBuffer())).matrix;
+        await analyse({ kind: 'matrix', matrix }, file.name, kind);
       }
-    };
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'We could not read this file. Check its format and try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
-    reader.readAsText(file);
+  async function chooseSign(signConvention) {
+    if (!current) return;
+    setIsLoading(true);
+    setLoadingLabel('Re-checking with your choice…');
+    try {
+      await analyse(current.payload, current.fileName, current.kind, { signConvention });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not re-analyse the file.');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function handleInputChange(event) {
@@ -95,6 +90,21 @@ export default function Upload({ onResult }) {
     setIsDragging(false);
     processFile(event.dataTransfer.files && event.dataTransfer.files[0]);
   }
+
+  const summary = result?.summary;
+  const preview = result?.preview || [];
+  const notes = [];
+  if (summary) {
+    if (summary.duplicateRows > 0) notes.push(`${summary.duplicateRows} row(s) looked identical to another row. They were kept, but counted once when looking for recurring charges.`);
+    if (summary.invalidDateRows > 0) notes.push(`${summary.invalidDateRows} row(s) had dates that could not be parsed and will not count toward recurrence detection.`);
+    if (summary.ambiguousDateRows > 0) notes.push(`${summary.ambiguousDateRows} date(s) were ambiguous; CleanSub assumed day-first. Check dates before relying on a match.`);
+    if (summary.unknownDirectionRows > 0 && !summary.needsSignChoice) notes.push(`${summary.unknownDirectionRows} amount(s) had no clear debit/credit direction, so related matches cannot be high confidence.`);
+    if (summary.invalidAmountRows > 0) notes.push(`${summary.invalidAmountRows} row(s) with invalid amounts were skipped.`);
+    if (summary.mixedCurrencies) notes.push(`This file mixes currencies (${summary.currencies.join(', ')}). Totals are shown per currency and never added together.`);
+    if (summary.signConventionSource === 'inferred' && summary.signConvention === 'positive-spending') notes.push('Positive amounts look like card charges in this file, so they were treated as spending. Medium confidence at most.');
+  }
+  for (const warning of result?.warnings || []) notes.push(warning);
+  if (current?.kind === 'pdf') notes.push('PDF import is best-effort: layouts differ between banks. Check the preview, or use your bank\'s CSV/Excel export when you can.');
 
   return (
     <section className="panel import-panel" id="import-panel">
@@ -114,16 +124,16 @@ export default function Upload({ onResult }) {
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setIsDragging(false); }}
         onDrop={handleDrop}
       >
-        <input ref={inputRef} id="statement-file" type="file" accept=".csv,text/csv" onChange={handleInputChange} className="visually-hidden" />
+        <input id="statement-file" type="file" accept=".csv,text/csv,.xlsx,.xlsm,.pdf,application/pdf" onChange={handleInputChange} className="visually-hidden" disabled={isLoading} />
         <div className="dropzone-icon"><Icon name={isLoading ? 'clock' : 'upload'} size={24} /></div>
         <div className="dropzone-copy">
-          <strong>{isLoading ? 'Reading your statement…' : isDragging ? 'Drop your CSV to import' : 'Drop your CSV statement here'}</strong>
-          <span>{isLoading ? 'Everything is processed in your browser.' : 'or choose a file from your device'}</span>
+          <strong>{isLoading ? loadingLabel : isDragging ? 'Drop your statement to import' : 'Drop your statement here'}</strong>
+          <span>{isLoading ? 'Everything is processed in your browser.' : 'CSV, Excel or text-based PDF'}</span>
         </div>
         <label className={'button button-secondary choose-file ' + (isLoading ? 'disabled' : '')} htmlFor="statement-file">
-          {isLoading ? 'Please wait…' : 'Choose CSV'}
+          {isLoading ? 'Please wait…' : 'Choose file'}
         </label>
-        <p className="file-constraints"><Icon name="shield" size={13} /> CSV only <span>·</span> Up to 10 MB <span>·</span> No account connection</p>
+        <p className="file-constraints"><Icon name="shield" size={13} /> CSV · XLSX · PDF <span>·</span> Up to 10 MB <span>·</span> No account connection</p>
       </div>
 
       {error && (
@@ -132,35 +142,36 @@ export default function Upload({ onResult }) {
         </div>
       )}
 
-      {importInfo && (
+      {result && (
         <div className="feedback-message success-message" role="status">
           <Icon name="check" size={17} />
-          <span><strong>Import complete.</strong> {importInfo.transactionCount} transactions reviewed; {importInfo.detectedCount} potential recurring {importInfo.detectedCount === 1 ? 'charge' : 'charges'} found.</span>
+          <span><strong>Import complete.</strong> {result.transactionCount} transactions reviewed from {KIND_LABEL[current?.kind] || 'your file'}; {result.subscriptions.length} potential recurring {result.subscriptions.length === 1 ? 'charge' : 'charges'} found.</span>
         </div>
       )}
 
-      {importInfo?.summary && (
-        importInfo.summary.duplicateRows > 0 ||
-        importInfo.summary.invalidDateRows > 0 ||
-        importInfo.summary.ambiguousDateRows > 0 ||
-        importInfo.summary.unknownDirectionRows > 0 ||
-        importInfo.summary.invalidAmountRows > 0
-      ) && (
+      {summary?.needsSignChoice && (
+        <div className="feedback-message warning-message sign-choice" role="group" aria-label="Choose what positive amounts mean">
+          <Icon name="info" size={17} />
+          <div>
+            <p><strong>One quick question.</strong> Every amount in this file is positive, so CleanSub cannot tell spending from income. What do positive amounts mean here?</p>
+            <div className="sign-choice-buttons">
+              <button className="button button-secondary" onClick={() => chooseSign('positive-spending')} disabled={isLoading}>Spending (card statement)</button>
+              <button className="button button-secondary" onClick={() => chooseSign('positive-income')} disabled={isLoading}>Money coming in</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {notes.length > 0 && (
         <div className="feedback-message warning-message" role="status">
           <Icon name="info" size={17} />
-          <span>
-            {importInfo.summary.duplicateRows > 0 && `${importInfo.summary.duplicateRows} exact duplicate rows ignored. `}
-            {importInfo.summary.invalidDateRows > 0 && `${importInfo.summary.invalidDateRows} row(s) had dates that could not be parsed and will not count toward recurrence detection. `}
-            {importInfo.summary.ambiguousDateRows > 0 && `${importInfo.summary.ambiguousDateRows} date(s) were ambiguous; CleanSub used day-first interpretation. Review dates before relying on a match. `}
-            {importInfo.summary.unknownDirectionRows > 0 && `${importInfo.summary.unknownDirectionRows} amount(s) had no clear debit/credit direction, so related matches cannot be high confidence. `}
-            {importInfo.summary.invalidAmountRows > 0 && `${importInfo.summary.invalidAmountRows} row(s) with invalid amounts were skipped.`}
-          </span>
+          <span>{notes.join(' ')}</span>
         </div>
       )}
 
       {preview.length > 0 && (
         <div className="preview-block">
-          <div className="preview-heading"><div><strong>Quick preview</strong><span>First {preview.length} transaction rows</span></div><span className="preview-file"><Icon name="file" size={14} />{importInfo ? importInfo.fileName : 'CSV file'}</span></div>
+          <div className="preview-heading"><div><strong>Quick preview</strong><span>First {preview.length} transaction rows</span></div><span className="preview-file"><Icon name="file" size={14} />{current ? current.fileName : 'File'}</span></div>
           <div className="preview-table-wrap">
             <table className="data-table preview-table">
               <thead><tr><th>Date</th><th>Description</th><th className="align-right">Amount / direction</th></tr></thead>
@@ -175,7 +186,7 @@ export default function Upload({ onResult }) {
       )}
 
       <div className="import-footer">
-        <span><Icon name="shield" size={15} /><span><strong>Private by default</strong><small>Your file is read locally and is not sent to a server.</small></span></span>
+        <span><Icon name="shield" size={15} /><span><strong>Private by default</strong><small>Your file is read locally and is never sent to a server.</small></span></span>
         <a href={sampleCsv} download="cleansub-sample.csv" className="sample-link">Try sample data <Icon name="arrow" size={14} /></a>
       </div>
     </section>

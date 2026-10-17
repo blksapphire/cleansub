@@ -1,21 +1,38 @@
 # CleanSub
 
-CleanSub is a local-first web app that helps you review possible recurring payments from a bank or card statement.
+CleanSub is a local-first web app that finds recurring payments in a bank or card statement, flags price rises and trial conversions, predicts the next charge, and links to each merchant's own account page. It never connects to your bank and never uploads your statement.
 
 ## Supported file formats
 
-**CSV is the only supported import format in the current MVP.** Excel workbooks, PDF statements, screenshots, and OFX/QFX files are not supported yet.
+| Format | Notes |
+| --- | --- |
+| **CSV** | Auto-detects delimiter (comma, semicolon, tab, pipe), skips account-info lines above the header, decodes UTF-8 or Windows-1252. |
+| **Excel (.xlsx)** | Picks the sheet that looks like transactions; header row may sit below a preamble. Old `.xls` is not supported - save as `.xlsx`. |
+| **PDF** | Text-based statements only. Rebuilds rows from text positions, assigning Debit/Credit by column. Best-effort: bank layouts differ, so check the preview. Scanned PDFs (no selectable text) are rejected with a clear message; OCR is not supported. |
 
-The recommended next format is **Excel (.xlsx)** because people often download transaction exports from spreadsheets. OFX/QFX can follow as structured financial-data formats. PDF statement extraction should come later because bank layouts differ and scanned PDFs may require OCR.
+OFX/QFX and screenshots are not supported.
+
+## What it does
+
+- **Recurring detection** for weekly, fortnightly, monthly, every-two-months, quarterly, half-yearly and yearly cycles. Tolerates a missed billing cycle, treats one merchant billing several plans (Apple, Google Play, PayPal) as separate streams, and ignores per-transaction reference codes and processor prefixes such as `PAYPAL *`.
+- **Possible matches**: two identical charges a long cycle apart are shown as "Possible", kept out of the headline total.
+- **Price movement**: a one-off rise or fall is a *step*; a gradual one-way move is *drift* (price creep, or the exchange rate on a foreign-currency charge).
+- **Next-charge prediction** and an **.ics calendar export** (recurring all-day events with a reminder the day before). Built on your device.
+- **Trial-to-paid detection**: a small first charge followed by a much larger one 3-40 days later.
+- **Overlap flags** (e.g. two video-streaming services) and a static, offline **merchant catalog** with links to official account/billing pages.
+- **Direction handling**: debit/credit columns, `DR`/`CR` suffixes, whole-value Type columns, amount sign, and a file-level sign pattern. If every amount is positive, the app asks whether positives are spending or income rather than guessing.
+- **Currency**: read from a Currency column or amount symbols (₦, £, €, $). Different currencies are never added together.
+- **Duplicates** are flagged, never dropped; a flagged row is counted once for recurrence detection.
+- Parsing runs in a Web Worker so large files do not freeze the page.
 
 ## Run locally
+
+Requires Node 20 or newer.
 
 ~~~bash
 npm install
 npm run dev
 ~~~
-
-Vite prints the local URL to open in your browser.
 
 ## Test and build
 
@@ -25,31 +42,19 @@ npm run build
 npm run preview
 ~~~
 
-The transaction parser regression tests use Node's built-in test runner.
+Tests use Node's built-in runner. Fixtures in `tests/fixtures` are a small `.xlsx` and a two-page `.pdf` statement.
 
-## Current features
+## Privacy
 
-- Import a CSV transaction statement by selecting a file or dragging it into the app.
-- Normalize common date, merchant-description, and amount columns in the browser.
-- Infer day-first or month-first date order from unambiguous rows; ambiguous dates are flagged.
-- Handle debit and credit columns separately when both are provided.
-- Identify likely incoming credits/refunds and exclude them from recurring-payment candidates.
-- Remove exact duplicate transaction rows and report malformed dates, amounts, and uncertain transaction direction.
-- Detect plausible weekly, fortnightly, monthly, every-two-months, quarterly, half-yearly, and yearly patterns.
-- Review estimated monthly amounts, occurrence counts, detected cadence, confidence, and the reasons behind a match.
-- Search detected merchants and review general safe next steps before attempting to cancel a service.
-- Display amounts in USD, NGN, GBP, EUR, or CAD. This changes formatting only; it does not convert exchange rates.
-- View summary metrics and insights based on the imported transaction set.
-
-## Privacy notes
-
-- CSV contents are read and processed in the browser. CleanSub does not connect to your bank or upload the statement to a CleanSub server.
-- Imported data is kept in app memory for the current session; refreshing the page clears the current results.
-- The app's external font request is separate from the transaction import. Before making a strict no-third-party-network-requests promise, remove the external font import and review hosting scripts and dependencies.
-- Import statements only on a device you trust, and avoid sharing screenshots that contain account or personal information.
+- Files are read and analysed in the browser. Nothing is uploaded to a CleanSub server.
+- Fonts are bundled (no Google Fonts request).
+- `vercel.json` sets a Content-Security-Policy that limits the page to its own origin (`connect-src 'self'`, no third-party scripts, frames or form posts), so the app cannot send your data to another site.
+- Imported data lives in memory for the session; refreshing clears it.
+- Merchant links open only when you click them.
+- `src/lib/privacy.test.js` fails the build if the analysis code gains any network primitive (`fetch`, `XMLHttpRequest`, `WebSocket`, `sendBeacon`...), or if the CSP is loosened by accident.
+- Planned paid features (alerts, encrypted sync) are opt-in and never send the statement; see [docs/free-vs-pro.md](docs/free-vs-pro.md) for the boundary and the exact CSP change billing will need.
+- Import statements only on a device you trust, and avoid sharing screenshots that contain account details.
 
 ## Important limitations
 
-Recurring-payment detection is heuristic, not a guarantee. Results can include false positives or miss charges when merchants use inconsistent descriptions, amounts, or billing intervals. Positive values in a generic Amount column may not reveal whether a transaction is a debit or credit; those rows are marked as unclear and cannot receive high confidence without other evidence. Numeric dates such as 01/02/2026 are ambiguous when the file does not establish its date convention; CleanSub defaults to day-first and flags those dates.
-
-Estimated monthly values are approximations, not confirmed future bills. Cancellation guidance is general and does not cancel subscriptions for you. Validate results against the original statement before making financial decisions.
+Detection is heuristic, not a guarantee. Results can include false positives or miss charges when merchants use inconsistent descriptions, amounts or billing intervals. Predicted dates and amounts are estimates, not confirmed bills. PDF extraction depends on the bank's layout. Catalog links point to merchants' own sites and can go stale. CleanSub does not cancel anything for you. Check results against the original statement before making financial decisions.

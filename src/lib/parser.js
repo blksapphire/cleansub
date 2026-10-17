@@ -1,3 +1,9 @@
+import { normalizeDescription, normalizeMerchant } from './merchant.js';
+import { INFERRED_SOURCES } from './direction.js';
+
+export { normalizeMerchant } from './merchant.js';
+export { detectRecurring } from './detect.js';
+
 const HEADER_ALIASES = {
   date: [
     'date', 'transactiondate', 'transactiondatetime', 'transactiontimestamp',
@@ -25,62 +31,121 @@ const HEADER_ALIASES = {
   currency: ['currency', 'currencycode', 'ccy']
 };
 
-const INFLOW_RE = /\b(credit(?:ed)?|deposit(?:ed)?|refund(?:ed)?|reversal|cashback|cash back|salary|payroll|income|received|interest|dividend|inward transfer|transfer from|cr)\b/i;
-const OUTFLOW_RE = /\b(debit(?:ed)?|withdraw(?:al|n)?|purchase|pos|card payment|bill payment|payment to|subscription charge|autopay|direct debit|fee|charge|spent|paid to|dr)\b/i;
-const MERCHANT_NOISE = new Set([
-  'the', 'and', 'online', 'internet', 'payment', 'payments', 'purchase',
-  'purchases', 'transaction', 'transactions', 'debit', 'credit', 'card',
-  'visa', 'mastercard', 'pos', 'web', 'mobile', 'recurring', 'subscription',
-  'monthly', 'autopay', 'bill', 'bank', 'transfer', 'approved', 'auth',
-  'authorization', 'terminal', 'com', 'net', 'org', 'www', 'io', 'pymt', 'svc'
+// The Type column must match a whole value. Substring matching misread
+// "Credit Card" as an inflow, so only unambiguous full values are accepted.
+const INFLOW_TYPES = new Set([
+  'cr', 'credit', 'credited', 'deposit', 'refund', 'reversal', 'cashback',
+  'cash back', 'salary', 'payroll', 'income', 'inflow', 'money in'
+]);
+const OUTFLOW_TYPES = new Set([
+  'dr', 'debit', 'debited', 'withdrawal', 'purchase', 'sale', 'charge', 'fee',
+  'pos', 'direct debit', 'card payment', 'bill payment', 'standing order',
+  'outflow', 'money out'
 ]);
 
-function normalizeHeader(value) {
+// Description hints are only consulted when the amount itself says nothing reliable.
+const STRONG_INFLOW_DESC = /\b(refund(?:ed)?|reversal|cashback|cash back|salary|payroll|transfer from|received from|inward transfer|deposit(?:ed)?)\b/i;
+const OUTFLOW_DESC = /\b(direct debit|card payment|bill payment|payment to|paid to|autopay|standing order|subscription charge|withdrawal)\b/i;
+const PAYMENT_LIKE_DESC = /\b(payment|thank you|autopay|refund|reversal|cashback|credit|adjustment)\b/i;
+
+export function normalizeHeader(value) {
   return String(value ?? '').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-function normalizeDescription(value) {
-  return String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Group descriptions that usually refer to the same merchant while removing
- * obvious references and payment-rail boilerplate. Kept conservative so
- * similar but unrelated merchants are less likely to be merged.
- */
-export function normalizeMerchant(value) {
-  let text = normalizeDescription(value);
-  if (!text) return '';
-
-  text = text
-    .replace(/\b(?:reference|ref|rrn|stan|auth|approval|terminal|trace|txn|transaction)\s*[:#-]?\s*[a-z0-9-]{4,}\b/gi, ' ')
-    .replace(/\b(?:\d[ -]?){7,}\b/g, ' ')
-    .replace(/\b(?:pos|web|card|online|purchase|payment|debit|dr|visa|mastercard)\b/gi, ' ')
-    .replace(/\b\d{3,}\b/g, ' ')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  const tokens = text.split(' ').filter((token) => token && !MERCHANT_NOISE.has(token));
-  return tokens.join(' ').trim();
-}
-
-function findHeader(headers, aliases) {
-  const lookup = new Map(headers.map((header) => [normalizeHeader(header), header]));
-  for (const alias of aliases) {
-    if (lookup.has(normalizeHeader(alias))) return lookup.get(normalizeHeader(alias));
-  }
-  return null;
-}
-
-function valueAt(row, header) {
-  if (!header) return '';
-  const actualKey = Object.keys(row).find((key) => normalizeHeader(key) === normalizeHeader(header));
-  return actualKey === undefined ? '' : row[actualKey];
 }
 
 function asText(value) {
   return value === null || value === undefined ? '' : String(value).trim();
+}
+
+/* ------------------------------------------------------------------ */
+/* Raw input helpers: decoding, matrix → rows, header-row detection    */
+/* ------------------------------------------------------------------ */
+
+/** Decode file bytes as UTF-8, falling back to Windows-1252 (common for bank exports). */
+export function decodeBuffer(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    text = new TextDecoder('windows-1252').decode(bytes);
+  }
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/** Spreadsheet cells may be Date objects; turn them into ISO dates, others into plain values. */
+export function cellToValue(cell) {
+  if (cell instanceof Date) {
+    if (Number.isNaN(cell.getTime())) return '';
+    const utcMidnight = cell.getUTCHours() === 0 && cell.getUTCMinutes() === 0 && cell.getUTCSeconds() === 0;
+    const y = utcMidnight ? cell.getUTCFullYear() : cell.getFullYear();
+    const m = (utcMidnight ? cell.getUTCMonth() : cell.getMonth()) + 1;
+    const d = utcMidnight ? cell.getUTCDate() : cell.getDate();
+    return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  if (cell === null || cell === undefined) return '';
+  if (typeof cell === 'number' || typeof cell === 'string') return cell;
+  return String(cell);
+}
+
+function rowHeaderScore(cells) {
+  const normalized = new Set(cells.map((cell) => normalizeHeader(cell)).filter(Boolean));
+  const has = (aliases) => aliases.some((alias) => normalized.has(alias));
+  const hasDate = has(HEADER_ALIASES.date);
+  const hasPayee = has(HEADER_ALIASES.payee);
+  const hasMoney = has(HEADER_ALIASES.amount) || has(HEADER_ALIASES.debit) || has(HEADER_ALIASES.credit);
+  return (hasDate ? 1 : 0) + (hasPayee ? 1 : 0) + (hasMoney ? 1 : 0);
+}
+
+/** Bank exports often start with account-info lines. Find the first row that looks like a header. */
+export function findHeaderRow(matrix, scanLimit = 60) {
+  let best = { index: 0, score: -1 };
+  const limit = Math.min(matrix.length, scanLimit);
+  for (let index = 0; index < limit; index += 1) {
+    const cells = (matrix[index] || []).map(cellToValue);
+    const score = rowHeaderScore(cells);
+    if (score === 3) return index;
+    if (score > best.score) best = { index, score };
+  }
+  return best.score >= 2 ? best.index : 0;
+}
+
+/** Convert an array-of-arrays (CSV / XLSX / PDF) into header-keyed row objects. */
+export function matrixToRows(matrix) {
+  if (!Array.isArray(matrix) || matrix.length === 0) return [];
+  const headerIndex = findHeaderRow(matrix);
+  const used = new Map();
+  const headers = (matrix[headerIndex] || []).map((cell, column) => {
+    let name = asText(cellToValue(cell)) || `column${column + 1}`;
+    const count = used.get(name) || 0;
+    used.set(name, count + 1);
+    if (count > 0) name = `${name}_${count + 1}`;
+    return name;
+  });
+  const rows = [];
+  for (let index = headerIndex + 1; index < matrix.length; index += 1) {
+    const cells = matrix[index] || [];
+    if (!cells.some((cell) => asText(cellToValue(cell)) !== '')) continue;
+    const row = {};
+    headers.forEach((header, column) => { row[header] = cellToValue(cells[column]); });
+    rows.push(row);
+  }
+  return rows;
+}
+
+/* ------------------------------------------------------------------ */
+/* Money, dates, direction                                             */
+/* ------------------------------------------------------------------ */
+
+function detectCurrencyInText(value) {
+  if (typeof value !== 'string') return '';
+  const text = value;
+  if (/\b(?:US\$|USD)\b|US\$/i.test(text)) return 'USD';
+  if (/\bC\$|\bCA\$|\bCAD\b/i.test(text)) return 'CAD';
+  if (/₦|\bNGN\b/i.test(text)) return 'NGN';
+  if (/£|\bGBP\b/i.test(text)) return 'GBP';
+  if (/€|\bEUR\b/i.test(text)) return 'EUR';
+  if (/\$/.test(text)) return 'USD';
+  return '';
 }
 
 function parseMoney(value) {
@@ -98,9 +163,13 @@ function parseMoney(value) {
     text = text.slice(0, suffix.index).trim();
   }
 
+  // Currency symbols and codes ("₦-8,000.00", "NGN 1,200") must not hide the sign.
+  text = text.replace(/[^\d.,()+\-\s\u00a0']/g, '');
   const isParenthesizedNegative = /^\s*\(.*\)\s*$/.test(text);
   text = text.replace(/[()]/g, '').replace(/[\s\u00a0']/g, '');
-  const explicitNegative = isParenthesizedNegative || /^\s*-/.test(text);
+  const trailingMinus = /\d-$/.test(text);
+  if (trailingMinus) text = text.slice(0, -1);
+  const explicitNegative = isParenthesizedNegative || trailingMinus || /^-/.test(text);
   const explicitPositive = /^\s*\+/.test(text);
   text = text.replace(/^[+-]/, '');
 
@@ -141,16 +210,11 @@ function parseMoney(value) {
   };
 }
 
-function classifyDirection(value) {
+function directionFromTypeColumn(value) {
   const text = normalizeDescription(value);
   if (!text) return null;
-
-  if (/^(?:cr|credit|credited|deposit|refund|reversal|cashback|cash back|salary|payroll|income|interest|dividend)$/.test(text) || INFLOW_RE.test(text)) {
-    return 'inflow';
-  }
-  if (/^(?:dr|debit|debited|withdrawal|purchase|payment|charge|fee)$/.test(text) || OUTFLOW_RE.test(text)) {
-    return 'outflow';
-  }
+  if (INFLOW_TYPES.has(text)) return 'inflow';
+  if (OUTFLOW_TYPES.has(text)) return 'outflow';
   return null;
 }
 
@@ -168,14 +232,23 @@ function validIsoDate(year, month, day) {
   ].join('-');
 }
 
+function expandYear(text) {
+  if (text.length === 4) return Number(text);
+  const yy = Number(text);
+  return yy <= 69 ? 2000 + yy : 1900 + yy;
+}
+
+// d/m/y with "/" or "-" is the ambiguous case; "." is DMY everywhere it is used.
+const NUMERIC_DATE = /^(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})(?:[\sT].*)?$/;
+
 function inferDateOrder(values) {
   let dmy = 0;
   let mdy = 0;
   for (const value of values) {
-    const match = asText(value).match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s.*)?$/);
-    if (!match) continue;
+    const match = asText(value).match(NUMERIC_DATE);
+    if (!match || match[2] === '.') continue;
     const first = Number(match[1]);
-    const second = Number(match[2]);
+    const second = Number(match[3]);
     if (first > 12 && second <= 12) dmy += 1;
     if (second > 12 && first <= 12) mdy += 1;
   }
@@ -193,15 +266,20 @@ function parseDate(value, dateOrder, dateOrderCertain) {
   let match = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/);
   if (match) return { date: validIsoDate(match[1], match[2], match[3]), ambiguous: false };
 
-  match = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s.*)?$/);
+  match = raw.match(NUMERIC_DATE);
   if (match) {
+    const separator = match[2];
     const first = Number(match[1]);
-    const second = Number(match[2]);
+    const second = Number(match[3]);
+    const year = expandYear(match[4]);
+    if (separator === '.') {
+      return { date: validIsoDate(year, second, first), ambiguous: false };
+    }
     const ambiguous = first <= 12 && second <= 12 && !dateOrderCertain;
     const order = first > 12 ? 'DMY' : second > 12 ? 'MDY' : dateOrder;
     const month = order === 'MDY' ? first : second;
     const day = order === 'MDY' ? second : first;
-    return { date: validIsoDate(match[3], month, day), ambiguous };
+    return { date: validIsoDate(year, month, day), ambiguous };
   }
 
   match = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
@@ -218,22 +296,62 @@ function parseDate(value, dateOrder, dateOrderCertain) {
 }
 
 function availableHeaders(rows) {
-  return Array.from(new Set(rows.flatMap((row) => Object.keys(row || {}))));
+  const seen = new Set();
+  for (const row of rows) {
+    if (!row) continue;
+    for (const key of Object.keys(row)) seen.add(key);
+  }
+  return Array.from(seen);
+}
+
+function findHeader(headers, aliases) {
+  const lookup = new Map();
+  for (const header of headers) {
+    const key = normalizeHeader(header);
+    if (!lookup.has(key)) lookup.set(key, header);
+  }
+  for (const alias of aliases) {
+    if (lookup.has(alias)) return lookup.get(alias);
+  }
+  return null;
 }
 
 /**
- * Normalizes CSV rows to a consistent transaction shape. amount is always a
+ * Decide how single-column amounts map to money in/out.
+ *  - user choice always wins
+ *  - all-negative or mixed files: negatives are spending (bank style), except when the
+ *    negatives overwhelmingly look like card payments/refunds (Amex-style exports)
+ *  - all-positive files are genuinely ambiguous and are reported as such
+ */
+function decideSignConvention(stats, requested) {
+  if (requested === 'positive-spending') return { convention: 'positive-spending', source: 'user' };
+  if (requested === 'positive-income') return { convention: 'negative-spending', source: 'user' };
+  const { negatives, positives, negativeLooksLikePayment } = stats;
+  if (negatives === 0 && positives === 0) return { convention: 'negative-spending', source: 'default' };
+  if (negatives === 0) return { convention: 'ambiguous', source: 'default' };
+  if (positives === 0) return { convention: 'negative-spending', source: 'inferred' };
+  if (positives / (positives + negatives) >= 0.75 && negativeLooksLikePayment / negatives >= 0.6) {
+    return { convention: 'positive-spending', source: 'inferred' };
+  }
+  return { convention: 'negative-spending', source: 'inferred' };
+}
+
+/**
+ * Normalizes row objects to a consistent transaction shape. amount is always a
  * positive magnitude; signedAmount is negative for spending and positive for
  * incoming money. Unknown direction is preserved rather than guessed.
+ *
+ * options.dateOrder:      'auto' | 'DMY' | 'MDY'
+ * options.signConvention: 'auto' | 'positive-spending' | 'positive-income'
  */
 export function parseTransactionsDetailed(rows, options = {}) {
   if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error('No transaction rows were found in this CSV.');
+    throw new Error('No transaction rows were found in this file.');
   }
 
   const nonBlankRows = rows.filter((row) => row && Object.values(row).some((value) => asText(value) !== ''));
   if (!nonBlankRows.length) {
-    throw new Error('No non-empty transaction rows were found in this CSV.');
+    throw new Error('No non-empty transaction rows were found in this file.');
   }
 
   const headers = availableHeaders(nonBlankRows);
@@ -252,31 +370,64 @@ export function parseTransactionsDetailed(rows, options = {}) {
     throw new Error('Could not find an amount column. Expected Amount, Debit/Credit, Withdrawal, Deposit, Money Out, or Money In.');
   }
 
-  const rawDates = nonBlankRows.map((row) => valueAt(row, columns.date));
+  const rawDates = nonBlankRows.map((row) => row[columns.date]);
   const requestedOrder = String(options.dateOrder || 'auto').toUpperCase();
   const explicitDateOrder = requestedOrder === 'MDY' || requestedOrder === 'DMY';
   const dateOrderInfo = explicitDateOrder
     ? { order: requestedOrder, confident: true }
     : inferDateOrder(rawDates);
-  const inferredOrder = dateOrderInfo.order;
 
-  const transactions = [];
+  // ---- pass 1: parse every row once and collect sign statistics ----
+  const prepared = [];
+  const signStats = { negatives: 0, positives: 0, negativeLooksLikePayment: 0 };
   let missingPayeeRows = 0;
+
+  for (const row of nonBlankRows) {
+    const payee = asText(row[columns.payee]);
+    if (!payee) {
+      missingPayeeRows += 1;
+      continue;
+    }
+    const debitCell = columns.debit ? row[columns.debit] : null;
+    const creditCell = columns.credit ? row[columns.credit] : null;
+    const amountCell = columns.amount ? row[columns.amount] : null;
+    const debitMoney = columns.debit ? parseMoney(debitCell) : null;
+    const creditMoney = columns.credit ? parseMoney(creditCell) : null;
+    const amountMoney = columns.amount ? parseMoney(amountCell) : null;
+    const usesSplitColumns = (columns.debit || columns.credit)
+      && ((debitMoney?.magnitude || 0) > 0 || (creditMoney?.magnitude || 0) > 0);
+    const typeDirection = columns.direction ? directionFromTypeColumn(row[columns.direction]) : null;
+
+    const entry = { row, payee, debitMoney, creditMoney, amountMoney, usesSplitColumns, typeDirection, amountCell, debitCell, creditCell };
+    if (!usesSplitColumns && amountMoney && amountMoney.magnitude > 0 && !amountMoney.suffixDirection && !typeDirection) {
+      if (amountMoney.signed < 0) {
+        signStats.negatives += 1;
+        if (PAYMENT_LIKE_DESC.test(payee)) signStats.negativeLooksLikePayment += 1;
+      } else {
+        signStats.positives += 1;
+      }
+    }
+    prepared.push(entry);
+  }
+
+  const signDecision = decideSignConvention(signStats, options.signConvention);
+  const signatureKeys = headers
+    .map((key) => [key, normalizeHeader(key)])
+    .sort((left, right) => left[1].localeCompare(right[1]));
+
+  // ---- pass 2: classify direction and build transactions ----
+  const transactions = [];
   let invalidAmountRows = 0;
   let zeroAmountRows = 0;
   let invalidDateRows = 0;
   let ambiguousDateRows = 0;
   let unknownDirectionRows = 0;
+  const currencies = new Map();
 
-  for (const row of nonBlankRows) {
-    const payee = asText(valueAt(row, columns.payee));
-    if (!payee) {
-      missingPayeeRows += 1;
-      continue;
-    }
-
-    const dateRaw = asText(valueAt(row, columns.date));
-    const parsedDate = parseDate(dateRaw, inferredOrder, dateOrderInfo.confident);
+  for (const entry of prepared) {
+    const { row, payee, debitMoney, creditMoney, amountMoney, usesSplitColumns, typeDirection } = entry;
+    const dateRaw = asText(row[columns.date]);
+    const parsedDate = parseDate(dateRaw, dateOrderInfo.order, dateOrderInfo.confident);
     if (!parsedDate.date) invalidDateRows += 1;
     if (parsedDate.ambiguous) ambiguousDateRows += 1;
 
@@ -284,13 +435,11 @@ export function parseTransactionsDetailed(rows, options = {}) {
     let direction = null;
     let directionSource = 'unknown';
     let amountSource = 'amount';
+    let signedFromSource = null;
 
-    const debitRaw = columns.debit ? parseMoney(valueAt(row, columns.debit)) : null;
-    const creditRaw = columns.credit ? parseMoney(valueAt(row, columns.credit)) : null;
-    const debitMagnitude = debitRaw ? debitRaw.magnitude : 0;
-    const creditMagnitude = creditRaw ? creditRaw.magnitude : 0;
-
-    if ((columns.debit || columns.credit) && (debitMagnitude > 0 || creditMagnitude > 0)) {
+    if (usesSplitColumns) {
+      const debitMagnitude = debitMoney ? debitMoney.magnitude : 0;
+      const creditMagnitude = creditMoney ? creditMoney.magnitude : 0;
       amountSource = 'debit-credit-columns';
       if (debitMagnitude > 0 && creditMagnitude === 0) {
         amount = debitMagnitude;
@@ -305,32 +454,51 @@ export function parseTransactionsDetailed(rows, options = {}) {
         direction = 'unknown';
         directionSource = 'conflicting-debit-credit-columns';
       }
-    } else {
-      const rawAmount = columns.amount ? parseMoney(valueAt(row, columns.amount)) : null;
-      if (rawAmount) {
-        amount = rawAmount.magnitude;
-        amountSource = columns.amount || 'debit-credit-columns';
+    } else if (amountMoney) {
+      amount = amountMoney.magnitude;
+      amountSource = columns.amount;
+      signedFromSource = amountMoney.signed;
 
-        const typeHint = classifyDirection(valueAt(row, columns.direction));
-        const descriptionHint = classifyDirection(payee);
-        if (rawAmount.suffixDirection) {
-          direction = rawAmount.suffixDirection;
-          directionSource = 'amount-suffix';
-        } else if (typeHint) {
-          direction = typeHint;
-          directionSource = 'transaction-type';
-        } else if (descriptionHint === 'inflow') {
-          direction = 'inflow';
-          directionSource = 'description-hint';
-        } else if (descriptionHint === 'outflow') {
-          direction = 'outflow';
-          directionSource = 'description-hint';
-        } else if (rawAmount.signed < 0) {
-          direction = 'outflow';
-          directionSource = 'amount-sign';
+      if (amountMoney.suffixDirection) {
+        direction = amountMoney.suffixDirection;
+        directionSource = 'amount-suffix';
+      } else if (typeDirection) {
+        direction = typeDirection;
+        directionSource = 'transaction-type';
+      } else {
+        const negative = amountMoney.signed < 0;
+        const { convention, source } = signDecision;
+        if (convention === 'positive-spending') {
+          direction = negative ? 'inflow' : 'outflow';
+          directionSource = source === 'user' ? 'user-sign-choice' : 'file-sign-pattern';
+        } else if (convention === 'negative-spending') {
+          if (negative) {
+            direction = 'outflow';
+            directionSource = 'amount-sign';
+          } else if (source === 'user') {
+            direction = 'inflow';
+            directionSource = 'user-sign-choice';
+          } else if (source === 'inferred') {
+            direction = 'inflow';
+            directionSource = 'file-sign-pattern';
+          } else {
+            direction = 'unknown';
+            directionSource = 'not-provided';
+          }
         } else {
           direction = 'unknown';
           directionSource = 'not-provided';
+        }
+
+        // Words like "refund" outrank an inferred direction, never an explicit one.
+        if (INFERRED_SOURCES.has(directionSource) || direction === 'unknown') {
+          if (STRONG_INFLOW_DESC.test(payee)) {
+            direction = 'inflow';
+            directionSource = 'description-hint';
+          } else if (direction === 'unknown' && OUTFLOW_DESC.test(payee)) {
+            direction = 'outflow';
+            directionSource = 'description-hint';
+          }
         }
       }
     }
@@ -349,16 +517,20 @@ export function parseTransactionsDetailed(rows, options = {}) {
     }
     if (direction === 'unknown') unknownDirectionRows += 1;
 
-    const originalMoney = columns.amount ? parseMoney(valueAt(row, columns.amount)) : null;
     const signedAmount = direction === 'outflow'
       ? -amount
       : direction === 'inflow'
         ? amount
-        : (originalMoney?.signed ?? amount);
-    const currency = columns.currency ? asText(valueAt(row, columns.currency)).toUpperCase() : '';
-    const sourceSignature = Object.keys(row)
-      .sort((left, right) => normalizeHeader(left).localeCompare(normalizeHeader(right)))
-      .map((key) => [normalizeHeader(key), asText(row[key])].join('='))
+        : (signedFromSource ?? amount);
+
+    const currencyColumn = columns.currency ? asText(row[columns.currency]).toUpperCase() : '';
+    const currency = /^[A-Z]{3}$/.test(currencyColumn)
+      ? currencyColumn
+      : (detectCurrencyInText(entry.amountCell) || detectCurrencyInText(entry.debitCell) || detectCurrencyInText(entry.creditCell));
+    if (currency) currencies.set(currency, (currencies.get(currency) || 0) + 1);
+
+    const sourceSignature = signatureKeys
+      .map(([key, label]) => label + '=' + asText(row[key]))
       .join(String.fromCharCode(31));
 
     transactions.push({
@@ -373,40 +545,37 @@ export function parseTransactionsDetailed(rows, options = {}) {
       directionSource,
       amountSource,
       currency,
+      possibleDuplicate: false,
       sourceSignature
     });
   }
 
+  // Identical rows are flagged, not dropped: two genuine same-day purchases can look identical.
+  // The recurrence detector counts a flagged row once, so exports with doubled rows are still safe.
   const seen = new Set();
   let duplicateRows = 0;
-  const deduplicated = transactions.filter((transaction) => {
-    const dateKey = transaction.date || normalizeDescription(transaction.dateRaw);
-    const key = transaction.sourceSignature || [
-      dateKey,
-      normalizeDescription(transaction.payee),
-      transaction.amount.toFixed(2),
-      transaction.direction,
-      transaction.signedAmount.toFixed(2)
-    ].join('|');
-    if (seen.has(key)) {
+  for (const transaction of transactions) {
+    if (seen.has(transaction.sourceSignature)) {
+      transaction.possibleDuplicate = true;
       duplicateRows += 1;
-      return false;
+    } else {
+      seen.add(transaction.sourceSignature);
     }
-    seen.add(key);
-    return true;
-  });
-
-  deduplicated.forEach((transaction) => { delete transaction.sourceSignature; });
-
-  if (!deduplicated.length) {
-    throw new Error('No usable transactions were found. Check that your CSV contains dates, merchant descriptions, and non-zero amounts.');
+    delete transaction.sourceSignature;
   }
 
+  if (!transactions.length) {
+    throw new Error('No usable transactions were found. Check that the file contains dates, merchant descriptions, and non-zero amounts.');
+  }
+
+  const currencyList = Array.from(currencies.keys()).sort();
+  const sorted = Array.from(currencies.entries()).sort((a, b) => b[1] - a[1]);
+
   return {
-    transactions: deduplicated,
+    transactions,
     summary: {
       inputRows: nonBlankRows.length,
-      importedRows: deduplicated.length,
+      importedRows: transactions.length,
       duplicateRows,
       missingPayeeRows,
       invalidAmountRows,
@@ -414,8 +583,14 @@ export function parseTransactionsDetailed(rows, options = {}) {
       invalidDateRows,
       ambiguousDateRows,
       unknownDirectionRows,
-      dateOrderUsed: inferredOrder,
-      dateOrderInferred: !explicitDateOrder && dateOrderInfo.confident
+      dateOrderUsed: dateOrderInfo.order,
+      dateOrderInferred: !explicitDateOrder && dateOrderInfo.confident,
+      signConvention: signDecision.convention,
+      signConventionSource: signDecision.source,
+      needsSignChoice: signDecision.convention === 'ambiguous',
+      currencies: currencyList,
+      detectedCurrency: sorted.length ? sorted[0][0] : '',
+      mixedCurrencies: currencyList.length > 1
     }
   };
 }
@@ -423,140 +598,4 @@ export function parseTransactionsDetailed(rows, options = {}) {
 /** Backwards-compatible array API for existing consumers. */
 export function parseTransactions(rows, options = {}) {
   return parseTransactionsDetailed(rows, options).transactions;
-}
-
-function median(values) {
-  if (!values.length) return 0;
-  const sorted = values.slice().sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
-function classifyFrequency(days) {
-  if (days >= 6 && days <= 8) return { key: 'weekly', label: 'Weekly', target: 7 };
-  if (days >= 12 && days <= 16) return { key: 'fortnightly', label: 'Every 2 weeks', target: 14 };
-  if (days >= 25 && days <= 35) return { key: 'monthly', label: 'Monthly', target: 30.4375 };
-  if (days >= 55 && days <= 65) return { key: 'every-two-months', label: 'Every 2 months', target: 60.875 };
-  if (days >= 80 && days <= 100) return { key: 'quarterly', label: 'Quarterly', target: 91.3125 };
-  if (days >= 165 && days <= 195) return { key: 'twice-yearly', label: 'Every 6 months', target: 182.625 };
-  if (days >= 350 && days <= 380) return { key: 'yearly', label: 'Yearly', target: 365.25 };
-  return null;
-}
-
-function intervalDeviation(intervals, typicalInterval) {
-  if (!intervals.length || typicalInterval <= 0) return Infinity;
-  return intervals.reduce((sum, value) => sum + Math.abs(value - typicalInterval), 0) / intervals.length / typicalInterval;
-}
-
-function stableAmounts(amounts) {
-  if (amounts.length < 2) return false;
-  const typical = median(amounts);
-  if (typical <= 0) return false;
-  return amounts.every((amount) => Math.abs(amount - typical) <= Math.max(1, typical * 0.05));
-}
-
-/**
- * Detects plausible recurring outflows. Incoming credits/refunds are ignored.
- * Unknown-direction rows may be shown as low-confidence candidates, but
- * cannot receive a high-confidence label without explicit outflow evidence.
- */
-export function detectRecurring(transactions) {
-  if (!Array.isArray(transactions) || !transactions.length) return [];
-
-  const groups = new Map();
-  for (const transaction of transactions) {
-    if (!transaction || !transaction.payee || !transaction.date) continue;
-    if (!Number.isFinite(Number(transaction.amount)) || Number(transaction.amount) <= 0) continue;
-    if (transaction.direction === 'inflow') continue;
-
-    const merchant = normalizeMerchant(transaction.normalized || transaction.payee);
-    if (!merchant) continue;
-    if (!groups.has(merchant)) groups.set(merchant, []);
-    groups.get(merchant).push({
-      ...transaction,
-      normalized: merchant,
-      amount: Math.abs(Number(transaction.amount)),
-      direction: transaction.direction === 'outflow' ? 'outflow' : 'unknown'
-    });
-  }
-
-  const results = [];
-  for (const [merchantKey, group] of groups.entries()) {
-    const sorted = group.slice().sort((a, b) => a.date.localeCompare(b.date));
-    const byDate = new Map();
-    for (const transaction of sorted) {
-      if (!byDate.has(transaction.date)) {
-        byDate.set(transaction.date, {
-          date: transaction.date,
-          amount: transaction.amount,
-          directions: [transaction.direction],
-          ambiguousDate: Boolean(transaction.dateAmbiguous)
-        });
-      } else {
-        const occurrence = byDate.get(transaction.date);
-        occurrence.amount += transaction.amount;
-        occurrence.directions.push(transaction.direction);
-        occurrence.ambiguousDate = occurrence.ambiguousDate || Boolean(transaction.dateAmbiguous);
-      }
-    }
-
-    const occurrences = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
-    if (occurrences.length < 3) continue;
-
-    const intervals = [];
-    for (let index = 1; index < occurrences.length; index += 1) {
-      const earlier = new Date(occurrences[index - 1].date + 'T00:00:00');
-      const later = new Date(occurrences[index].date + 'T00:00:00');
-      const days = Math.round((later - earlier) / 86400000);
-      if (days > 0) intervals.push(days);
-    }
-    if (intervals.length < 2) continue;
-
-    const typicalInterval = median(intervals);
-    const frequency = classifyFrequency(typicalInterval);
-    if (!frequency) continue;
-
-    const deviation = intervalDeviation(intervals, frequency.target);
-    if (deviation > 0.22) continue;
-
-    const amounts = occurrences.map((occurrence) => occurrence.amount);
-    const typicalAmount = median(amounts);
-    const amountStable = stableAmounts(amounts);
-    const allOutflowsConfirmed = occurrences.every((occurrence) => occurrence.directions.every((direction) => direction === 'outflow'));
-    const hasAmbiguousDates = occurrences.some((occurrence) => occurrence.ambiguousDate);
-    const confidence = allOutflowsConfirmed && amountStable && deviation <= 0.12 && !hasAmbiguousDates
-      ? 'High'
-      : allOutflowsConfirmed && (amountStable || occurrences.length >= 4) && deviation <= 0.18 && !hasAmbiguousDates
-        ? 'Medium'
-        : 'Low';
-
-    const estimatedMonthly = typicalAmount * (30.4375 / typicalInterval);
-    const reasons = [
-      'Appeared on ' + occurrences.length + ' separate dates',
-      frequency.label + ' pattern (median interval ' + typicalInterval + ' days)',
-      amountStable ? 'Amounts are relatively consistent' : 'Amounts vary between occurrences',
-      allOutflowsConfirmed ? 'Outgoing payment direction identified' : 'Transaction direction is unclear from the source file'
-    ];
-    if (hasAmbiguousDates) reasons.push('Some dates used an assumed day/month order');
-
-    results.push({
-      payee: sorted[0].payee,
-      normalized: merchantKey,
-      count: occurrences.length,
-      intervals,
-      medianIntervalDays: typicalInterval,
-      frequency: frequency.label,
-      frequencyKey: frequency.key,
-      estimatedMonthly,
-      confidence,
-      reasons,
-      amountStable,
-      directionConfirmed: allOutflowsConfirmed,
-      intervalDeviation: deviation
-    });
-  }
-
-  const confidenceRank = { High: 0, Medium: 1, Low: 2 };
-  results.sort((a, b) => confidenceRank[a.confidence] - confidenceRank[b.confidence] || b.estimatedMonthly - a.estimatedMonthly);
-  return results;
 }

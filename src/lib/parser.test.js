@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectRecurring, normalizeMerchant, parseTransactionsDetailed } from './parser.js';
 
-test('normalizes negative amounts and removes exact duplicate rows', () => {
+test('normalizes negative amounts and flags (not drops) exact duplicate rows', () => {
   const rows = [
     { Date: '2026-01-10', Description: 'Netflix', Amount: '-15.99' },
     { Date: '2026-01-10', Description: 'Netflix', Amount: '-15.99' },
@@ -12,7 +12,8 @@ test('normalizes negative amounts and removes exact duplicate rows', () => {
 
   const { transactions, summary } = parseTransactionsDetailed(rows);
   assert.equal(summary.duplicateRows, 1);
-  assert.equal(transactions.length, 3);
+  assert.equal(transactions.length, 4);
+  assert.equal(transactions.filter((t) => t.possibleDuplicate).length, 1);
   assert.equal(transactions[0].amount, 15.99);
   assert.equal(transactions[0].signedAmount, -15.99);
   assert.equal(transactions[0].direction, 'outflow');

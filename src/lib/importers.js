@@ -1,4 +1,7 @@
-// Browser-side file readers. Heavy libraries (xlsx, pdf.js) are loaded on demand so the
+// Browser-side file readers. pdf.js is pinned to 4.x and its legacy build is used on purpose:
+// 5.x/6.x need Promise.withResolvers (Node 22+, Chrome 119+, Safari 17.4+), which breaks PDF
+// import on older phones and on Node 20.
+// Heavy libraries (xlsx, pdf.js) are loaded on demand so the
 // first page load stays small. Everything happens on the user's device.
 import { pdfPagesToMatrix } from './pdfLayout.js';
 import { findHeaderRow, cellToValue, normalizeHeader } from './parser.js';
@@ -39,8 +42,8 @@ export async function readXlsxMatrix(blobOrBuffer) {
 export async function readPdfMatrix(buffer, pdfjs) {
   let lib = pdfjs;
   if (!lib) {
-    lib = await import('pdfjs-dist/build/pdf.mjs');
-    const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+    lib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
     lib.GlobalWorkerOptions.workerSrc = worker.default;
   }
   let doc;

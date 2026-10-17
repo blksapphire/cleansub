@@ -27,7 +27,7 @@ OFX/QFX and screenshots are not supported.
 
 ## Run locally
 
-Requires Node 22.13 or newer (pdf.js).
+Requires Node 20 or newer.
 
 ~~~bash
 npm install

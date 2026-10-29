@@ -1,4 +1,4 @@
-import { normalizeDescription, normalizeMerchant } from './merchant.js';
+import { normalizeDescription, normalizeMerchant, cleanPayee } from './merchant.js';
 import { INFERRED_SOURCES } from './direction.js';
 
 export { normalizeMerchant } from './merchant.js';
@@ -376,6 +376,11 @@ export function parseTransactionsDetailed(rows, options = {}) {
   const dateOrderInfo = explicitDateOrder
     ? { order: requestedOrder, confident: true }
     : inferDateOrder(rawDates);
+  // Some exports state the currency only in a preamble ("Currency: NGN"); the caller
+  // forwards it here so charges are not rendered in the wrong currency.
+  const fallbackCurrency = /^[A-Z]{3}$/.test(String(options.defaultCurrency || '').toUpperCase())
+    ? String(options.defaultCurrency).toUpperCase()
+    : '';
 
   // ---- pass 1: parse every row once and collect sign statistics ----
   const prepared = [];
@@ -383,7 +388,8 @@ export function parseTransactionsDetailed(rows, options = {}) {
   let missingPayeeRows = 0;
 
   for (const row of nonBlankRows) {
-    const payee = asText(row[columns.payee]);
+    const rawPayee = asText(row[columns.payee]);
+    const payee = cleanPayee(rawPayee) || rawPayee;
     if (!payee) {
       missingPayeeRows += 1;
       continue;
@@ -526,7 +532,7 @@ export function parseTransactionsDetailed(rows, options = {}) {
     const currencyColumn = columns.currency ? asText(row[columns.currency]).toUpperCase() : '';
     const currency = /^[A-Z]{3}$/.test(currencyColumn)
       ? currencyColumn
-      : (detectCurrencyInText(entry.amountCell) || detectCurrencyInText(entry.debitCell) || detectCurrencyInText(entry.creditCell));
+      : (detectCurrencyInText(entry.amountCell) || detectCurrencyInText(entry.debitCell) || detectCurrencyInText(entry.creditCell) || fallbackCurrency);
     if (currency) currencies.set(currency, (currencies.get(currency) || 0) + 1);
 
     const sourceSignature = signatureKeys

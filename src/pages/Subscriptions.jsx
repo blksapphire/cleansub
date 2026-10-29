@@ -3,6 +3,24 @@ import Icon from '../Icon';
 import { formatCurrency, formatDate, formatPct } from '../lib/format';
 import { nextCharge } from '../lib/schedule';
 import { CATEGORY_LABELS } from '../data/catalog';
+import { KIND_LABELS } from '../lib/classify';
+
+const kindOf = (item) => item.kind || 'subscription';
+
+const KIND_GUIDANCE = {
+  transfer: {
+    heading: 'About this recurring transfer',
+    body: "CleanSub matched this because money went to the same recipient on a repeating schedule. It is a transfer, not a merchant subscription. If you recognise the recipient, nothing needs changing; if you don't, check the transaction in your bank app."
+  },
+  fee: {
+    heading: 'About this bank charge',
+    body: 'This is a recurring bank charge, not a merchant subscription. Fees appear here so they are not mistaken for a service you can cancel. Check your bank\'s fee schedule if the amount looks unusually high.'
+  },
+  other: {
+    heading: 'About this recurring charge',
+    body: 'This repeats in your statement but does not look like a merchant subscription. Confirm it in your bank app before acting on it.'
+  }
+};
 
 function confidenceLabel(value) {
   if (value === 'High') return 'High confidence';
@@ -26,15 +44,25 @@ export function PriceBadge({ change, currency }) {
 
 export default function Subscriptions({ items = [], currency = 'USD', compact = false, onViewAll, onImport }) {
   const [query, setQuery] = useState('');
+  const [kind, setKind] = useState('subscription');
   const [openHelp, setOpenHelp] = useState(null);
   const safeItems = Array.isArray(items) ? items : [];
+  const kindCounts = useMemo(() => {
+    const counts = { all: safeItems.length, subscription: 0, transfer: 0, fee: 0, other: 0 };
+    for (const item of safeItems) counts[kindOf(item)] = (counts[kindOf(item)] || 0) + 1;
+    return counts;
+  }, [safeItems]);
+  const hasOtherKinds = kindCounts.transfer + kindCounts.fee + kindCounts.other > 0;
+  // A new import may not contain the selected kind at all; show everything instead of an empty table.
+  const activeKind = !compact && kind !== 'all' && kindCounts[kind] === 0 ? 'all' : kind;
   const filteredItems = useMemo(() => {
+    const byKind = compact ? safeItems : safeItems.filter((item) => activeKind === 'all' || kindOf(item) === activeKind);
     const normalizedQuery = query.trim().toLowerCase();
     const filtered = normalizedQuery
-      ? safeItems.filter((item) => (String(item.payee || '') + ' ' + (item.catalog?.name || '')).toLowerCase().includes(normalizedQuery))
-      : safeItems;
+      ? byKind.filter((item) => (String(item.payee || '') + ' ' + (item.catalog?.name || '')).toLowerCase().includes(normalizedQuery))
+      : byKind;
     return compact ? filtered.slice(0, 5) : filtered;
-  }, [safeItems, query, compact]);
+  }, [safeItems, query, compact, activeKind]);
   const colSpan = compact ? 4 : 7;
 
   return (
@@ -42,8 +70,8 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
       <div className="panel-heading subscription-heading">
         <div>
           <p className="eyebrow">{compact ? 'THE REPEAT LIST' : 'YOUR RECURRING PAYMENTS'}</p>
-          <h2>{compact ? 'Detected subscriptions' : 'All detected subscriptions'}</h2>
-          <p className="panel-subtitle">{compact ? 'Potential recurring charges found in your statement.' : 'Review each match before deciding what to keep or cancel.'}</p>
+          <h2>{compact ? 'Detected subscriptions' : hasOtherKinds ? 'All recurring payments' : 'All detected subscriptions'}</h2>
+          <p className="panel-subtitle">{compact ? 'Potential recurring charges found in your statement.' : 'Subscriptions, transfers and fees are kept apart so each one is reviewed for what it is.'}</p>
         </div>
         {compact ? (
           <button className="text-button view-all-button" onClick={onViewAll} disabled={!safeItems.length}>View all <Icon name="chevron" size={15} /></button>
@@ -51,6 +79,27 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
           <span className="count-pill">{safeItems.length} {safeItems.length === 1 ? 'match' : 'matches'}</span>
         )}
       </div>
+
+      {!compact && hasOtherKinds && safeItems.length > 0 && (
+        <div className="kind-filters" role="group" aria-label="Filter by charge type">
+          {[
+            ['all', 'All recurring'],
+            ['subscription', 'Subscriptions'],
+            ['transfer', 'Transfers'],
+            ['fee', 'Bank fees'],
+            ['other', 'Other']
+          ].filter(([id]) => id === 'all' || id === 'subscription' || kindCounts[id] > 0).map(([id, label]) => (
+            <button
+              key={id}
+              className={'kind-chip ' + (activeKind === id ? 'active' : '')}
+              aria-pressed={activeKind === id}
+              onClick={() => setKind(id)}
+            >
+              {label}<span className="kind-count">{kindCounts[id] || 0}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {!compact && safeItems.length > 0 && (
         <div className="table-toolbar">
@@ -77,7 +126,7 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
           <table className="data-table subscriptions-table">
             <thead>
               <tr>
-                <th>Merchant</th>
+                <th>Merchant or payee</th>
                 <th>Est. monthly</th>
                 {!compact && <th>Billing pattern</th>}
                 {!compact && <th>Next charge</th>}
@@ -94,6 +143,8 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                 const money = item.currency || currency;
                 const next = compact ? null : nextCharge(item);
                 const category = item.catalog ? CATEGORY_LABELS[item.catalog.category] : '';
+                const itemKind = kindOf(item);
+                const meta = [category, itemKind !== 'subscription' ? KIND_LABELS[itemKind] : ''].filter(Boolean).join(' · ');
                 return (
                   <React.Fragment key={key}>
                     <tr className={isOpen ? 'row-open' : ''}>
@@ -102,7 +153,7 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                           <span className={'merchant-avatar merchant-' + (index % 5)}>{String(item.catalog?.name || item.payee || '?').trim().charAt(0).toUpperCase()}</span>
                           <span className="merchant-info">
                             <strong>{item.catalog?.name || item.payee || 'Unknown merchant'}{item.streamAmount !== undefined ? ' · ' + formatCurrency(item.streamAmount, money) : ''}</strong>
-                            <small>{compact ? 'Recurring payment' : (category || item.payee)}</small>
+                            <small>{compact ? 'Recurring payment' : (meta || item.payee)}</small>
                           </span>
                         </div>
                       </td>
@@ -126,8 +177,10 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                           <div className="guidance-content">
                             <span className="guidance-icon"><Icon name="info" size={18} /></span>
                             <div className="guidance-copy">
-                              <strong>Before you change {item.catalog?.name || item.payee || 'this subscription'}</strong>
-                              <p>Confirm the charge in the merchant's official account or billing settings. If you don't recognize it, contact the merchant using a trusted website or phone number. For an unauthorized card charge, contact your bank or card provider.</p>
+                              <strong>{itemKind === 'subscription' ? `Before you change ${item.catalog?.name || item.payee || 'this subscription'}` : KIND_GUIDANCE[itemKind].heading}</strong>
+                              <p>{itemKind === 'subscription'
+                                ? "Confirm the charge in the merchant's official account or billing settings. If you don't recognize it, contact the merchant using a trusted website or phone number. For an unauthorized card charge, contact your bank or card provider."
+                                : KIND_GUIDANCE[itemKind].body}</p>
                               {item.priceChange && (
                                 <p className="guidance-flag"><Icon name="trend" size={14} /> {item.priceChange.kind === 'step'
                                   ? `The charge went ${item.priceChange.direction === 'increase' ? 'up' : 'down'} ${formatPct(item.priceChange.pct)} (${formatCurrency(item.priceChange.from, money)} to ${formatCurrency(item.priceChange.to, money)}) from ${formatDate(item.priceChange.changeDate)}.`
@@ -161,7 +214,7 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
         <div className="table-bottom-link"><span>Showing 5 of {safeItems.length} detected matches</span><button className="text-button" onClick={onViewAll}>See all subscriptions <Icon name="arrow" size={14} /></button></div>
       )}
       {!compact && safeItems.length > 0 && (
-        <div className="table-bottom-link"><span>{query ? 'Showing ' + filteredItems.length + ' of ' + safeItems.length + ' matches' : 'Matches are estimates, not confirmed subscriptions.'}</span><span><Icon name="shield" size={14} /> Stored only in this session</span></div>
+        <div className="table-bottom-link"><span>{query ? 'Showing ' + filteredItems.length + ' of ' + safeItems.length + ' matches' : 'Matches are estimates, not confirmed charges.'}</span><span><Icon name="shield" size={14} /> Stored only in this session</span></div>
       )}
     </section>
   );

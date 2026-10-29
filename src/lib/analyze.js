@@ -36,8 +36,31 @@ export function parseCsvText(text) {
   return { matrix: best.matrix, warnings };
 }
 
-function finish(rows, options, warnings = [], source = 'csv') {
-  const parsed = parseTransactionsDetailed(rows, options);
+/** Read a "Currency: NGN" style preamble that sits above the header row. */
+function currencyFromPreamble(matrix) {
+  const headerIndex = findHeaderRow(matrix);
+  for (let index = 0; index < headerIndex; index += 1) {
+    const cells = (matrix[index] || []).map((cell) => String(cellToValue(cell)).trim());
+    for (let column = 0; column < cells.length; column += 1) {
+      if (!/^currency\b/i.test(cells[column])) continue;
+      const inline = cells[column].match(/\b([A-Z]{3})\b/);
+      if (inline) return inline[1];
+      for (let next = column + 1; next < cells.length; next += 1) {
+        if (/^[A-Za-z]{3}$/.test(cells[next])) return cells[next].toUpperCase();
+      }
+    }
+  }
+  return '';
+}
+
+function finish(matrix, options, warnings = [], source = 'csv') {
+  const rows = matrixToRows(matrix);
+  const mergedOptions = { ...options };
+  if (!mergedOptions.defaultCurrency) {
+    const preambleCurrency = currencyFromPreamble(matrix);
+    if (preambleCurrency) mergedOptions.defaultCurrency = preambleCurrency;
+  }
+  const parsed = parseTransactionsDetailed(rows, mergedOptions);
   const detected = enrichResults(detectRecurring(parsed.transactions));
   return {
     source,
@@ -53,10 +76,10 @@ function finish(rows, options, warnings = [], source = 'csv') {
 /** CSV bytes -> analysis. Runs in the worker so large files do not freeze the page. */
 export function analyzeCsvBuffer(buffer, options = {}) {
   const { matrix, warnings } = parseCsvText(decodeBuffer(buffer));
-  return finish(matrixToRows(matrix), options, warnings, 'csv');
+  return finish(matrix, options, warnings, 'csv');
 }
 
 /** Array-of-arrays (from XLSX or PDF extraction) -> analysis. */
 export function analyzeMatrix(matrix, options = {}, source = 'matrix') {
-  return finish(matrixToRows(matrix), options, [], source);
+  return finish(matrix, options, [], source);
 }

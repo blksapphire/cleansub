@@ -172,6 +172,12 @@ a { color: inherit; }
 .text-button:hover { color: var(--brand-dark); }
 .view-all-button:disabled { color: #b4bebc; }
 .count-pill { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 6px 9px; border-radius: 7px; border: 1px solid #e5ece9; color: #5d7a70; background: #f9fcfa; font-size: 11px; font-weight: 700; }
+.kind-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 22px 12px; }
+.kind-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid #e5ece9; border-radius: 999px; background: #fff; color: #61756f; font-size: 11px; font-weight: 700; }
+.kind-chip:hover { border-color: #cfe2da; background: #f7fbf9; }
+.kind-chip.active { border-color: #b9ddd0; background: #eaf5ef; color: #2f7560; }
+.kind-count { padding: 1px 6px; border-radius: 999px; background: #f1f4f3; color: #85948f; font-size: 10px; }
+.kind-chip.active .kind-count { background: #d7ebe2; color: #3d7f69; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 0 22px 16px; }
 .search-field { display: flex; align-items: center; gap: 8px; width: min(290px, 100%); padding: 9px 11px; border: 1px solid #e5eaea; background: #fbfcfc; border-radius: 8px; color: #98a4a8; }
 .search-field:focus-within { border-color: #a7cfc2; box-shadow: 0 0 0 3px rgba(23,124,104,.06); }
@@ -309,6 +315,7 @@ a { color: inherit; }
   .currency-select { gap: 6px; }
   .currency-select > span { font-size: 11px; }
   .currency-select select { max-width: 112px; padding: 8px 7px; font-size: 12px; }
+  .side-nav { flex-wrap: wrap; overflow: visible; }
   .top-import { padding: 9px 10px; font-size: 12px; }
   .page-content { padding: 23px 14px 18px; }
   .page-heading { align-items: flex-start; margin-bottom: 20px; }
@@ -319,8 +326,8 @@ a { color: inherit; }
   .metric-card { min-height: 137px; padding: 14px 13px 13px; border-radius: 11px; }
   .metric-icon { width: 30px; height: 30px; margin-bottom: 13px; }
   .metric-label { font-size: 11px; white-space: normal; min-height: 25px; line-height: 1.35; }
-  .metric-value { font-size: 25px; }
-  .metric-detail { font-size: 9px; }
+  .metric-value { font-size: clamp(18px, 5vw, 25px); letter-spacing: -.6px; }
+  .metric-detail { font-size: 9px; white-space: normal; line-height: 1.35; }
   .panel { border-radius: 12px; }
   .panel-heading h2 { font-size: 16px; }
   .import-panel, .getting-started-panel, .insight-panel { padding: 17px 15px; }
@@ -336,6 +343,7 @@ a { color: inherit; }
   .subscription-heading { align-items: flex-start; }
   .panel-subtitle { font-size: 11px; }
   .table-toolbar { padding: 0 15px 13px; }
+  .kind-filters { padding: 0 15px 11px; }
   .search-field { width: 100%; }
   .table-note { margin-left: 1px; }
   .data-table { min-width: 620px; }

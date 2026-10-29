@@ -4,8 +4,8 @@ import Upload from './pages/Upload';
 import Subscriptions from './pages/Subscriptions';
 import Upcoming from './pages/Upcoming';
 import Insights from './pages/Insights';
-import { formatCurrency, formatTotals, isValidCurrency } from './lib/format';
-import { totalsByCurrency, isLikely } from './lib/insights';
+import { formatTotals, isValidCurrency } from './lib/format';
+import { totalsByCurrency, isLikely, isSubscription } from './lib/insights';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: 'grid' },
@@ -53,8 +53,10 @@ export default function App() {
   const [currency, setCurrency] = useState('USD');
   const [detectedCurrency, setDetectedCurrency] = useState('');
 
-  const likelyTotals = useMemo(() => totalsByCurrency(subscriptions, isLikely), [subscriptions]);
-  const highConfidence = subscriptions.filter((item) => item.confidence === 'High').length;
+  const subscriptionItems = useMemo(() => subscriptions.filter(isSubscription), [subscriptions]);
+  const likelyTotals = useMemo(() => totalsByCurrency(subscriptionItems, isLikely), [subscriptionItems]);
+  const highConfidence = subscriptionItems.filter((item) => item.confidence === 'High').length;
+  const otherRecurring = subscriptions.length - subscriptionItems.length;
   const copy = viewCopy[activeView];
   const currencyOptions = useMemo(() => {
     const base = ['USD', 'NGN', 'GBP', 'EUR', 'CAD'];
@@ -100,7 +102,7 @@ export default function App() {
             >
               <Icon name={item.icon} size={18} />
               <span>{item.label}</span>
-              {item.id === 'subscriptions' && subscriptions.length > 0 && <span className="nav-count">{subscriptions.length}</span>}
+              {item.id === 'subscriptions' && subscriptionItems.length > 0 && <span className="nav-count">{subscriptionItems.length}</span>}
             </button>
           ))}
         </nav>
@@ -148,9 +150,9 @@ export default function App() {
           {activeView === 'overview' && (
             <>
               <div className="metrics-grid">
-                <MetricCard icon="repeat" tone="tone-green" label="Estimated monthly recurring" value={formatTotals(likelyTotals, currency)} detail={subscriptions.length ? 'High and medium matches only' : 'Import a statement to begin'} />
-                <MetricCard icon="card" tone="tone-blue" label="Subscriptions found" value={subscriptions.length} detail={subscriptions.length ? 'Potential recurring merchants' : 'Nothing tracked yet'} />
-                <MetricCard icon="shield" tone="tone-violet" label="High-confidence matches" value={highConfidence} detail={subscriptions.length ? 'Worth reviewing first' : 'Built from repeat patterns'} />
+                <MetricCard icon="repeat" tone="tone-green" label="Estimated monthly recurring" value={formatTotals(likelyTotals, currency)} detail={subscriptionItems.length ? 'Subscriptions only; likely matches' : 'Import a statement to begin'} />
+                <MetricCard icon="card" tone="tone-blue" label="Subscriptions found" value={subscriptionItems.length} detail={otherRecurring ? `${otherRecurring} other recurring charge${otherRecurring === 1 ? '' : 's'} kept separate` : subscriptionItems.length ? 'Potential recurring merchants' : 'Nothing tracked yet'} />
+                <MetricCard icon="shield" tone="tone-violet" label="High-confidence matches" value={highConfidence} detail={subscriptionItems.length ? 'Worth reviewing first' : 'Built from repeat patterns'} />
                 <MetricCard icon="file" tone="tone-amber" label="Transactions reviewed" value={transactionCount.toLocaleString()} detail={lastImport ? 'Latest: ' + lastImport : 'Your statement stays local'} />
               </div>
 
@@ -172,21 +174,21 @@ export default function App() {
                   <p className="muted-copy">CleanSub spots patterns in your transaction history so you can decide which recurring payments are worth keeping.</p>
                   <div className="step-list">
                     <div className={'step-item ' + (transactionCount > 0 ? 'completed' : '')}><span className="step-number">{transactionCount > 0 ? <Icon name="check" size={15} /> : '1'}</span><span><strong>Import a statement</strong><small>CSV, Excel or a text-based PDF from your bank or card provider.</small></span></div>
-                    <div className={'step-item ' + (subscriptions.length > 0 ? 'completed' : '')}><span className="step-number">{subscriptions.length > 0 ? <Icon name="check" size={15} /> : '2'}</span><span><strong>Review detected patterns</strong><small>Check confidence, price changes and estimated monthly costs.</small></span></div>
+                    <div className={'step-item ' + (subscriptionItems.length > 0 ? 'completed' : '')}><span className="step-number">{subscriptionItems.length > 0 ? <Icon name="check" size={15} /> : '2'}</span><span><strong>Review detected patterns</strong><small>Check confidence, price changes and estimated monthly costs.</small></span></div>
                     <div className="step-item"><span className="step-number">3</span><span><strong>Choose what stays</strong><small>Use each merchant's official settings, and add the renewal dates to your calendar.</small></span></div>
                   </div>
                   <div className="honesty-note"><Icon name="info" size={17} /><span>CleanSub identifies possible recurring charges. It does not cancel subscriptions or access your bank account.</span></div>
                 </section>
               </div>
 
-              <Subscriptions items={subscriptions} currency={currency} compact onViewAll={() => setActiveView('subscriptions')} onImport={goToImport} />
+              <Subscriptions items={subscriptionItems} currency={currency} compact onViewAll={() => setActiveView('subscriptions')} onImport={goToImport} />
             </>
           )}
 
           {activeView === 'subscriptions' && (
             <>
               <div className="metrics-grid metrics-grid-three">
-                <MetricCard icon="repeat" tone="tone-green" label="Detected subscriptions" value={subscriptions.length} detail="Potential recurring merchants" />
+                <MetricCard icon="repeat" tone="tone-green" label="Detected subscriptions" value={subscriptionItems.length} detail={otherRecurring ? `${otherRecurring} other recurring charge${otherRecurring === 1 ? '' : 's'} kept separate` : 'Potential recurring merchants'} />
                 <MetricCard icon="wallet" tone="tone-blue" label="Estimated monthly total" value={formatTotals(likelyTotals, currency)} detail="High and medium matches; not a bill total" />
                 <MetricCard icon="shield" tone="tone-violet" label="High confidence" value={highConfidence} detail="Review these matches first" />
               </div>
@@ -200,7 +202,7 @@ export default function App() {
           )}
 
           {activeView === 'insights' && (
-            <Insights subscriptions={subscriptions} insights={insights} currency={currency} onImport={goToImport} />
+            <Insights subscriptions={subscriptionItems} insights={insights} currency={currency} onImport={goToImport} />
           )}
 
           <footer className="page-footer">

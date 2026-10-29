@@ -93,6 +93,9 @@ export default function Upload({ onResult }) {
 
   const summary = result?.summary;
   const preview = result?.preview || [];
+  const found = result?.subscriptions || [];
+  const subscriptionCount = found.filter((item) => !item.kind || item.kind === 'subscription').length;
+  const otherCount = found.length - subscriptionCount;
   const notes = [];
   if (summary) {
     if (summary.duplicateRows > 0) notes.push(`${summary.duplicateRows} row(s) looked identical to another row. They were kept, but counted once when looking for recurring charges.`);
@@ -145,7 +148,7 @@ export default function Upload({ onResult }) {
       {result && (
         <div className="feedback-message success-message" role="status">
           <Icon name="check" size={17} />
-          <span><strong>Import complete.</strong> {result.transactionCount} transactions reviewed from {KIND_LABEL[current?.kind] || 'your file'}; {result.subscriptions.length} potential recurring {result.subscriptions.length === 1 ? 'charge' : 'charges'} found.</span>
+          <span><strong>Import complete.</strong> {result.transactionCount} transactions reviewed from {KIND_LABEL[current?.kind] || 'your file'}; {subscriptionCount} subscription{subscriptionCount === 1 ? '' : 's'}{otherCount > 0 ? ` and ${otherCount} other recurring charge${otherCount === 1 ? '' : 's'}` : ''} found.</span>
         </div>
       )}
 

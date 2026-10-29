@@ -1,7 +1,8 @@
 import { lookupMerchant, CATEGORY_LABELS, OVERLAP_CATEGORIES } from '../data/catalog.js';
 import { detectTrialConversions } from './detect.js';
+import { classifyRecurring } from './classify.js';
 
-/** Attach catalog info (name, category, official account link) to each detected stream. */
+/** Attach catalog info (name, category, official account link) and the charge kind. */
 export function enrichResults(results) {
   return results.map((result) => {
     const entry = lookupMerchant(result.normalized);
@@ -9,7 +10,8 @@ export function enrichResults(results) {
       ...result,
       catalog: entry
         ? { id: entry.id, name: entry.name, category: entry.category, cancelUrl: entry.cancelUrl }
-        : null
+        : null,
+      kind: classifyRecurring(result)
     };
   });
 }
@@ -28,6 +30,7 @@ export function totalsByCurrency(results, predicate) {
 
 export const isLikely = (result) => result.confidence === 'High' || result.confidence === 'Medium';
 export const isPossible = (result) => !isLikely(result);
+export const isSubscription = (result) => !result?.kind || result.kind === 'subscription';
 
 /** Two or more different services in a category where overlap is common. */
 export function findOverlaps(results) {
@@ -56,12 +59,14 @@ export function findOverlaps(results) {
 }
 
 export function buildInsights(results, transactions) {
-  const priceChanges = results
+  const subscriptions = results.filter(isSubscription);
+  const priceChanges = subscriptions
     .filter((result) => result.priceChange)
     .sort((a, b) => Math.abs(b.priceChange.pct) - Math.abs(a.priceChange.pct));
   return {
     priceChanges,
-    trials: detectTrialConversions(transactions, results),
-    overlaps: findOverlaps(results)
+    trials: detectTrialConversions(transactions, subscriptions)
+      .filter((alert) => classifyRecurring(alert) === 'subscription'),
+    overlaps: findOverlaps(subscriptions)
   };
 }

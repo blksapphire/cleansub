@@ -15,13 +15,14 @@ OFX/QFX and screenshots are not supported.
 ## What it does
 
 - **Recurring detection** for weekly, fortnightly, monthly, every-two-months, quarterly, half-yearly and yearly cycles. Tolerates a missed billing cycle, treats one merchant billing several plans (Apple, Google Play, PayPal) as separate streams, and ignores per-transaction reference codes and processor prefixes such as `PAYPAL *`.
+- **Subscriptions vs transfers**: each repeat is classed as a subscription, a transfer to a person, a bank fee/levy, or another recurring charge. Narrations such as `TRANSFER TO NAME BANK *****123/TRF`, `MOB/UTO`, `Value Added Tax` and airtime are recognised, so recurring transfers and fees never inflate the subscription count or spend total. All kinds remain viewable behind filter chips.
 - **Possible matches**: two identical charges a long cycle apart are shown as "Possible", kept out of the headline total.
 - **Price movement**: a one-off rise or fall is a *step*; a gradual one-way move is *drift* (price creep, or the exchange rate on a foreign-currency charge).
 - **Next-charge prediction** and an **.ics calendar export** (recurring all-day events with a reminder the day before). Built on your device.
 - **Trial-to-paid detection**: a small first charge followed by a much larger one 3-40 days later.
 - **Overlap flags** (e.g. two video-streaming services) and a static, offline **merchant catalog** with links to official account/billing pages.
 - **Direction handling**: debit/credit columns, `DR`/`CR` suffixes, whole-value Type columns, amount sign, and a file-level sign pattern. If every amount is positive, the app asks whether positives are spending or income rather than guessing.
-- **Currency**: read from a Currency column or amount symbols (₦, £, €, $). Different currencies are never added together.
+- **Currency**: read from a Currency column, a `Currency: NGN` line above the header, or amount symbols (₦, £, €, $). Different currencies are never added together.
 - **Duplicates** are flagged, never dropped; a flagged row is counted once for recurrence detection.
 - Parsing runs in a Web Worker so large files do not freeze the page.
 

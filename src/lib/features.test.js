@@ -5,6 +5,8 @@ import { detectTrialConversions, analyzePriceChange } from './detect.js';
 import { nextCharge, upcomingCharges, buildIcs, addMonths } from './schedule.js';
 import { lookupMerchant } from '../data/catalog.js';
 import { enrichResults, findOverlaps, totalsByCurrency, isLikely } from './insights.js';
+import { analyzeMatrix } from './analyze.js';
+import { normalizeMerchant, cleanPayee } from './merchant.js';
 
 const row = (Date, Description, Amount) => ({ Date, Description, Amount });
 const detect = (rows) => detectRecurring(parseTransactionsDetailed(rows).transactions);
@@ -28,6 +30,44 @@ test('gradual same-direction movement is drift; erratic or tiny change is nothin
 test('price decreases are reported as decreases', () => {
   const [r] = detect([row('2026-01-10', 'Gym', '-30'), row('2026-02-10', 'Gym', '-30'), row('2026-03-10', 'Gym', '-25'), row('2026-04-10', 'Gym', '-25')]);
   assert.equal(r.priceChange.direction, 'decrease');
+});
+test('a sustained 19% rise keeps one stream: 2 old + 4 new (Netflix)', () => {
+  const found = detect([
+    row('2026-01-10', 'Netflix', '-15.99'), row('2026-02-10', 'Netflix', '-15.99'),
+    row('2026-03-10', 'Netflix', '-18.99'), row('2026-04-10', 'Netflix', '-18.99'),
+    row('2026-05-10', 'Netflix', '-18.99'), row('2026-06-10', 'Netflix', '-18.99')
+  ]);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].count, 6);
+  assert.equal(found[0].priceChange.kind, 'step');
+  assert.equal(found[0].priceChange.from, 15.99);
+  assert.equal(found[0].priceChange.to, 18.99);
+  assert.equal(found[0].priceChange.changeDate, '2026-03-10');
+  assert.equal(found[0].estimatedMonthly.toFixed(2), '18.99');
+  assert.equal(found[0].streamAmount, undefined);
+});
+test('a sustained rise with equal halves does not become two subscriptions: 3 old + 3 new', () => {
+  const found = detect([
+    row('2026-01-10', 'Netflix', '-15.99'), row('2026-02-10', 'Netflix', '-15.99'), row('2026-03-10', 'Netflix', '-15.99'),
+    row('2026-04-10', 'Netflix', '-18.99'), row('2026-05-10', 'Netflix', '-18.99'), row('2026-06-10', 'Netflix', '-18.99')
+  ]);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].count, 6);
+  assert.equal(found[0].priceChange.kind, 'step');
+  assert.equal(found[0].estimatedMonthly.toFixed(2), '18.99');
+});
+test('parallel plans billed by one merchant still split into streams', () => {
+  const rows = [];
+  for (const month of [1, 2, 3, 4]) {
+    rows.push(row(`2026-0${month}-05`, 'Apple', '-10.99'), row(`2026-0${month}-20`, 'Apple', '-24.99'));
+  }
+  const found = detect(rows);
+  assert.equal(found.length, 2);
+  assert.deepEqual(found.map((r) => r.streamAmount).sort((a, b) => a - b), [10.99, 24.99]);
+  for (const result of found) {
+    assert.equal(result.count, 4);
+    assert.equal(result.priceChange, null);
+  }
 });
 
 /* ---- trial conversions ---- */
@@ -111,4 +151,26 @@ test('totals never add across currencies and split likely from possible', () => 
     { currency: 'USD', estimatedMonthly: 5, confidence: 'Low' }
   ], isLikely);
   assert.deepEqual(totals, [{ currency: 'NGN', amount: 8000 }, { currency: 'USD', amount: 10 }]);
+});
+
+/* ---- statement metadata ---- */test('Moniepoint reference tails do not split one recipient into several streams', () => {
+  const a = 'TRANSFER TO GOODNESS MAYOWA AJAYI OPay *****96864/TRF|2MPTjkhz4|2038628090511822848';
+  const b = 'TRANSFER TO GOODNESS MAYOWA AJAYI OPay *****96864/TRF|2MPTaeh11|1934582684215967744';
+  assert.equal(normalizeMerchant(a), 'to goodness mayowa ajayi opay');
+  assert.equal(normalizeMerchant(a), normalizeMerchant(b));
+  assert.equal(cleanPayee(a), 'TRANSFER TO GOODNESS MAYOWA AJAYI OPay');
+});
+test('a Currency: preamble above the header sets the statement currency', () => {
+  const matrix = [
+    ['Account Statement'],
+    ['Account Name:', 'A Customer', 'Currency:', 'NGN'],
+    ['Date', 'Narration', 'Debit'],
+    ['2026-01-10', 'Netflix', '2000'],
+    ['2026-02-10', 'Netflix', '2000'],
+    ['2026-03-10', 'Netflix', '2000']
+  ];
+  const result = analyzeMatrix(matrix);
+  assert.equal(result.summary.detectedCurrency, 'NGN');
+  assert.equal(result.subscriptions[0].currency, 'NGN');
+  assert.equal(result.subscriptions[0].kind, 'subscription');
 });

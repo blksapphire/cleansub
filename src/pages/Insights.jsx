@@ -1,7 +1,7 @@
 import React from 'react';
 import Icon from '../Icon';
 import { formatCurrency, formatDate, formatPct, formatTotals } from '../lib/format';
-import { totalsByCurrency, isLikely, isPossible } from '../lib/insights';
+import { totalsByCurrency, isLikely, isPossible, isSubscription } from '../lib/insights';
 import { PriceBadge } from './Subscriptions';
 
 function ConfidenceRow({ label, count, total, tone }) {
@@ -19,24 +19,29 @@ function ConfidenceRow({ label, count, total, tone }) {
 }
 
 export default function Insights({ subscriptions, insights, currency, onImport }) {
-  const total = subscriptions.length;
-  const count = (label) => subscriptions.filter((item) => item.confidence === label).length;
+  // Transfers and bank fees are excluded so the spend view is only services, not people.
+  const reviewed = subscriptions.filter(isSubscription);
+  const total = reviewed.length;
+  const count = (label) => reviewed.filter((item) => item.confidence === label).length;
   const high = count('High');
   const medium = count('Medium');
   const low = count('Low');
   const possible = count('Possible');
-  const likelyTotals = totalsByCurrency(subscriptions, isLikely);
-  const possibleTotals = totalsByCurrency(subscriptions, isPossible);
+  const likelyTotals = totalsByCurrency(reviewed, isLikely);
+  const possibleTotals = totalsByCurrency(reviewed, isPossible);
   const currencyTotal = (code) => likelyTotals.find((t) => t.currency === (code || ''))?.amount || 0;
-  const sorted = subscriptions.filter(isLikely).sort((a, b) => b.estimatedMonthly - a.estimatedMonthly).slice(0, 5);
+  const sorted = reviewed.filter(isLikely).sort((a, b) => b.estimatedMonthly - a.estimatedMonthly).slice(0, 5);
   const highest = sorted[0];
 
   if (!total) {
+    const hadRecurring = subscriptions.length > 0;
     return (
       <section className="empty-insights panel">
         <div className="empty-illustration"><Icon name="chart" size={28} /></div>
-        <h2>Your insights will show up here</h2>
-        <p>Import a statement to see recurring charges, price changes, overlaps and match confidence.</p>
+        <h2>{hadRecurring ? 'No merchant subscriptions found' : 'Your insights will show up here'}</h2>
+        <p>{hadRecurring
+          ? 'Recurring transfers and bank fees were kept apart from subscriptions, so there is no subscription spend to report yet.'
+          : 'Import a statement to see recurring charges, price changes, overlaps and match confidence.'}</p>
         <button className="button button-primary" onClick={onImport}><Icon name="upload" size={17} /> Import a statement</button>
       </section>
     );

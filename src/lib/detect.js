@@ -185,6 +185,29 @@ function buildOccurrences(transactions) {
   return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/**
+ * Clusters that appear in date order (old price, then new price) describe one stream
+ * whose price stepped. Clusters that alternate describe separate plans billed in parallel.
+ */
+function clustersAreTimeOrdered(transactions, clusters) {
+  if (clusters.length < 2) return true;
+  const owner = new Map();
+  clusters.forEach((cluster, index) => {
+    for (const transaction of cluster) owner.set(transaction, index);
+  });
+  const ordered = transactions.slice().sort((a, b) => a.date.localeCompare(b.date));
+  const finished = new Set();
+  let current = -1;
+  for (const transaction of ordered) {
+    const index = owner.get(transaction);
+    if (index === undefined || index === current) continue;
+    if (finished.has(index)) return false;
+    if (current !== -1) finished.add(current);
+    current = index;
+  }
+  return true;
+}
+
 /** Chain-cluster amounts so two plans billed by one merchant become separate streams. */
 function clusterByAmount(transactions) {
   const ordered = transactions.slice().sort((a, b) => a.amount - b.amount);
@@ -254,7 +277,12 @@ function evaluateStream(occurrences, context) {
     confidence = 'Possible';
   }
 
-  const basis = amountStable || amountDrifting || occurrences.length < 3 ? latest.amount : typicalAmount;
+  const priceChange = confidence === 'Possible' ? null : analyzePriceChange(occurrences);
+  // The latest charge is the current price: stable (same thing), drifting (ends where it
+  // ends) and stepped (the new price). Only erratic amounts fall back to the median.
+  const basis = amountStable || amountDrifting || priceChange || occurrences.length < 3
+    ? latest.amount
+    : typicalAmount;
   const estimatedMonthly = basis * (AVG_MONTH / frequency.target);
   const typicalInterval = median(intervals);
 
@@ -294,7 +322,7 @@ function evaluateStream(occurrences, context) {
     lastAmount: latest.amount,
     anchorDay: Number(latest.date.slice(8, 10)),
     history: occurrences.map((o) => ({ date: o.date, amount: o.amount })),
-    priceChange: confidence === 'Possible' ? null : analyzePriceChange(occurrences),
+    priceChange,
     currency: context.currency
   };
 }
@@ -349,14 +377,19 @@ export function detectRecurring(transactions) {
     }
 
     let found = [];
+    const clusters = clusterByAmount(group);
     const whole = evaluateStream(trialRest || occurrences, context);
+    // A sustained price rise splits the stream into amount clusters just like parallel
+    // plans do. Keep the whole stream (so the step and the older charges survive) when
+    // the clusters follow each other in time; interleaved clusters are separate plans.
+    const stepAcrossClusters = Boolean(whole) && Boolean(whole.priceChange)
+      && clusters.length > 1 && clustersAreTimeOrdered(group, clusters);
     const wholeIsSteady = Boolean(whole) && whole.confidence !== 'Possible'
-      && (whole.amountStable || whole.amountDrifting || Boolean(trialRest) || clusterByAmount(group).length === 1);
+      && (whole.amountStable || whole.amountDrifting || Boolean(trialRest)
+        || clusters.length === 1 || stepAcrossClusters);
     if (wholeIsSteady) {
       found = [{ ...whole, trial: trialRest ? trial : null }];
     } else {
-      // One merchant, several plans (Apple, Google Play, PayPal): analyse each amount stream.
-      const clusters = clusterByAmount(group);
       let streams = [];
       if (clusters.length > 1) {
         streams = clusters

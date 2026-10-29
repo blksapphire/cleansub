@@ -3,6 +3,7 @@ import Icon from '../Icon';
 import { formatCurrency, formatDate, formatTotals } from '../lib/format';
 import { upcomingCharges, buildIcs, addDays, todayIso } from '../lib/schedule';
 import { totalsByCurrency, isLikely } from '../lib/insights';
+import { KIND_LABELS } from '../lib/classify';
 
 export default function Upcoming({ subscriptions, currency, onImport }) {
   const [includePossible, setIncludePossible] = useState(false);
@@ -66,10 +67,11 @@ export default function Upcoming({ subscriptions, currency, onImport }) {
         <ul className="upcoming-list">
           {items.map((item, index) => {
             const money = item.result.currency || currency;
+            const kind = item.result.kind || 'subscription';
             return (
               <li key={item.result.streamKey + item.date + index}>
                 <span className="upcoming-date"><strong>{formatDate(item.date)}</strong></span>
-                <span className="upcoming-name">{item.result.catalog?.name || item.result.payee}<small>{item.result.frequency} · {item.result.confidence}</small></span>
+                <span className="upcoming-name">{item.result.catalog?.name || item.result.payee}<small>{kind !== 'subscription' ? KIND_LABELS[kind] + ' · ' : ''}{item.result.frequency} · {item.result.confidence}</small></span>
                 <strong className="upcoming-amount">{formatCurrency(item.amount, money)}</strong>
               </li>
             );

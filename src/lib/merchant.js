@@ -5,7 +5,7 @@ const NOISE = new Set([
   'purchases', 'transaction', 'transactions', 'debit', 'credit', 'card',
   'visa', 'mastercard', 'pos', 'web', 'mobile', 'recurring', 'subscription',
   'monthly', 'autopay', 'bill', 'bank', 'transfer', 'approved', 'auth',
-  'authorization', 'terminal', 'com', 'net', 'org', 'www', 'io', 'pymt', 'svc'
+  'authorization', 'terminal', 'com', 'net', 'org', 'www', 'io', 'pymt', 'svc', 'trf'
 ]);
 
 // Payment-processor prefixes ("PAYPAL *SPOTIFY") that hide the real merchant.
@@ -13,6 +13,15 @@ const PROCESSOR_PREFIX = /^(?:paypal|pp|sq|square|sp|tst|stripe|paddle|fsp)\s*\*
 
 export function normalizeDescription(value) {
   return String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** The narration as shown in the UI: drop pipe-separated reference tails and account masks. */
+export function cleanPayee(value) {
+  return String(value ?? '')
+    .replace(/\s*\|\s*.+$/, '')
+    .replace(/\s*\*{3,}\d+\s*\/\s*trf\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 // Tokens such as "p1a2b3c4d5" are per-transaction reference codes, not merchant names.
@@ -45,6 +54,9 @@ function computeMerchant(value) {
   if (!text) return '';
 
   text = text.replace(PROCESSOR_PREFIX, '');
+  // Nigerian bank exports append pipe-separated rails and per-transaction tokens:
+  // "TRANSFER TO NAME OPay *****123/TRF|2MPTjkhz4|2038628090511822848".
+  text = text.replace(/\|.*$/, ' ');
   text = text
     .replace(/\b(?:reference|ref|rrn|stan|auth|approval|terminal|trace|txn|transaction)\s*[:#-]?\s*[a-z0-9-]{4,}\b/gi, ' ')
     .replace(/\b(?:\d[ -]?){7,}\b/g, ' ')

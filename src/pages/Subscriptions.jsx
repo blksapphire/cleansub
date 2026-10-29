@@ -4,6 +4,7 @@ import { formatCurrency, formatDate, formatPct } from '../lib/format';
 import { nextCharge } from '../lib/schedule';
 import { CATEGORY_LABELS } from '../data/catalog';
 import { KIND_LABELS } from '../lib/classify';
+import { decisionFor, visibleItems, dismissedItems } from '../lib/curate';
 
 const kindOf = (item) => item.kind || 'subscription';
 
@@ -42,27 +43,30 @@ export function PriceBadge({ change, currency }) {
   );
 }
 
-export default function Subscriptions({ items = [], currency = 'USD', compact = false, onViewAll, onImport }) {
+export default function Subscriptions({ items = [], currency = 'USD', compact = false, decisions = {}, onDecide, onViewAll, onImport }) {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState('subscription');
   const [openHelp, setOpenHelp] = useState(null);
+  const [showSetAside, setShowSetAside] = useState(false);
   const safeItems = Array.isArray(items) ? items : [];
+  const dismissedList = useMemo(() => dismissedItems(safeItems, decisions), [safeItems, decisions]);
+  const visibleList = useMemo(() => visibleItems(safeItems, decisions), [safeItems, decisions]);
   const kindCounts = useMemo(() => {
-    const counts = { all: safeItems.length, subscription: 0, transfer: 0, fee: 0, other: 0 };
-    for (const item of safeItems) counts[kindOf(item)] = (counts[kindOf(item)] || 0) + 1;
+    const counts = { all: visibleList.length, subscription: 0, transfer: 0, fee: 0, other: 0 };
+    for (const item of visibleList) counts[kindOf(item)] = (counts[kindOf(item)] || 0) + 1;
     return counts;
-  }, [safeItems]);
+  }, [visibleList]);
   const hasOtherKinds = kindCounts.transfer + kindCounts.fee + kindCounts.other > 0;
   // A new import may not contain the selected kind at all; show everything instead of an empty table.
   const activeKind = !compact && kind !== 'all' && kindCounts[kind] === 0 ? 'all' : kind;
   const filteredItems = useMemo(() => {
-    const byKind = compact ? safeItems : safeItems.filter((item) => activeKind === 'all' || kindOf(item) === activeKind);
+    const byKind = compact ? visibleList : visibleList.filter((item) => activeKind === 'all' || kindOf(item) === activeKind);
     const normalizedQuery = query.trim().toLowerCase();
     const filtered = normalizedQuery
       ? byKind.filter((item) => (String(item.payee || '') + ' ' + (item.catalog?.name || '')).toLowerCase().includes(normalizedQuery))
       : byKind;
     return compact ? filtered.slice(0, 5) : filtered;
-  }, [safeItems, query, compact, activeKind]);
+  }, [visibleList, query, compact, activeKind]);
   const colSpan = compact ? 4 : 7;
 
   return (
@@ -71,16 +75,16 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
         <div>
           <p className="eyebrow">{compact ? 'THE REPEAT LIST' : 'YOUR RECURRING PAYMENTS'}</p>
           <h2>{compact ? 'Detected subscriptions' : hasOtherKinds ? 'All recurring payments' : 'All detected subscriptions'}</h2>
-          <p className="panel-subtitle">{compact ? 'Potential recurring charges found in your statement.' : 'Subscriptions, transfers and fees are kept apart so each one is reviewed for what it is.'}</p>
+          <p className="panel-subtitle">{compact ? 'Potential recurring charges found in your statement.' : 'Subscriptions, transfers and fees are kept apart so each one is reviewed for what it is. Keep what you recognise; set aside what is not a subscription.'}</p>
         </div>
         {compact ? (
-          <button className="text-button view-all-button" onClick={onViewAll} disabled={!safeItems.length}>View all <Icon name="chevron" size={15} /></button>
+          <button className="text-button view-all-button" onClick={onViewAll} disabled={!visibleList.length}>View all <Icon name="chevron" size={15} /></button>
         ) : (
-          <span className="count-pill">{safeItems.length} {safeItems.length === 1 ? 'match' : 'matches'}</span>
+          <span className="count-pill">{visibleList.length} {visibleList.length === 1 ? 'match' : 'matches'}{dismissedList.length ? ` · ${dismissedList.length} set aside` : ''}</span>
         )}
       </div>
 
-      {!compact && hasOtherKinds && safeItems.length > 0 && (
+      {!compact && hasOtherKinds && visibleList.length > 0 && (
         <div className="kind-filters" role="group" aria-label="Filter by charge type">
           {[
             ['all', 'All recurring'],
@@ -101,7 +105,7 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
         </div>
       )}
 
-      {!compact && safeItems.length > 0 && (
+      {!compact && visibleList.length > 0 && (
         <div className="table-toolbar">
           <label className="search-field">
             <Icon name="search" size={17} />
@@ -119,6 +123,15 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
           <p>Once you import a statement, CleanSub will look for merchants that appear on a regular schedule.</p>
           {onImport && <button className="button button-secondary" onClick={onImport}><Icon name="upload" size={16} /> Import a statement</button>}
         </div>
+      ) : visibleList.length === 0 ? (
+        <div className="empty-table-state">
+          <div className="empty-illustration small"><Icon name="close" size={23} /></div>
+          <h3>Every match is set aside</h3>
+          <p>{compact ? 'Open the full subscriptions list to restore any of them.' : 'You marked all detected charges as not subscriptions. Use the set-aside list below to restore any of them.'}</p>
+          {compact && onViewAll
+            ? <button className="button button-secondary" onClick={onViewAll}>View all matches</button>
+            : !compact && <button className="button button-secondary" onClick={() => setShowSetAside(true)}>Review set-aside items</button>}
+        </div>
       ) : filteredItems.length === 0 ? (
         <div className="no-search-results"><Icon name="search" size={19} /><span>No merchants match “{query}”. Try another name.</span></div>
       ) : (
@@ -132,7 +145,7 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                 {!compact && <th>Next charge</th>}
                 {!compact && <th>Seen</th>}
                 <th>Confidence</th>
-                <th className="actions-column">Details</th>
+                <th className="actions-column">Review</th>
               </tr>
             </thead>
             <tbody>
@@ -145,15 +158,16 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                 const category = item.catalog ? CATEGORY_LABELS[item.catalog.category] : '';
                 const itemKind = kindOf(item);
                 const meta = [category, itemKind !== 'subscription' ? KIND_LABELS[itemKind] : ''].filter(Boolean).join(' · ');
+                const isKept = decisionFor(item, decisions) === 'kept';
                 return (
                   <React.Fragment key={key}>
-                    <tr className={isOpen ? 'row-open' : ''}>
+                    <tr className={[isOpen ? 'row-open' : '', isKept ? 'row-kept' : ''].filter(Boolean).join(' ')}>
                       <td>
                         <div className="merchant-cell">
                           <span className={'merchant-avatar merchant-' + (index % 5)}>{String(item.catalog?.name || item.payee || '?').trim().charAt(0).toUpperCase()}</span>
                           <span className="merchant-info">
                             <strong>{item.catalog?.name || item.payee || 'Unknown merchant'}{item.streamAmount !== undefined ? ' · ' + formatCurrency(item.streamAmount, money) : ''}</strong>
-                            <small>{compact ? 'Recurring payment' : (meta || item.payee)}</small>
+                            <small>{compact ? 'Recurring payment' : (meta || item.payee)}{isKept ? ' · Kept' : ''}</small>
                           </span>
                         </div>
                       </td>
@@ -169,7 +183,30 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
                       )}
                       {!compact && <td className="occurrences-cell">{item.count || 0} <span>times</span></td>}
                       <td><span className={'confidence-pill confidence-' + confidence.toLowerCase()}><span />{confidenceLabel(confidence)}</span></td>
-                      <td className="actions-column"><button className={'row-action ' + (isOpen ? 'is-open' : '')} onClick={() => setOpenHelp(isOpen ? null : key)} aria-expanded={isOpen}>{isOpen ? 'Hide' : 'Guide'}<Icon name="chevron" size={14} /></button></td>
+                      <td className="actions-column">
+                        <div className="row-actions">
+                          {onDecide && (
+                            <>
+                              <button
+                                type="button"
+                                className={'decision-button keep' + (isKept ? ' active' : '')}
+                                onClick={() => onDecide(item, 'kept')}
+                                aria-pressed={isKept}
+                                aria-label={isKept ? 'Remove keep mark' : 'Keep this match'}
+                                title={isKept ? 'Remove keep mark' : 'Mark as reviewed and keep'}
+                              ><Icon name="check" size={14} /></button>
+                              <button
+                                type="button"
+                                className="decision-button dismiss"
+                                onClick={() => onDecide(item, 'dismissed')}
+                                aria-label="Set aside as not a subscription"
+                                title="Set aside as not a subscription"
+                              ><Icon name="close" size={14} /></button>
+                            </>
+                          )}
+                          <button className={'row-action ' + (isOpen ? 'is-open' : '')} onClick={() => setOpenHelp(isOpen ? null : key)} aria-expanded={isOpen}>{isOpen ? 'Hide' : 'Guide'}<Icon name="chevron" size={14} /></button>
+                        </div>
+                      </td>
                     </tr>
                     {isOpen && (
                       <tr className="guidance-row">
@@ -210,11 +247,34 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
           </table>
         </div>
       )}
-      {compact && safeItems.length > 5 && (
-        <div className="table-bottom-link"><span>Showing 5 of {safeItems.length} detected matches</span><button className="text-button" onClick={onViewAll}>See all subscriptions <Icon name="arrow" size={14} /></button></div>
+      {compact && visibleList.length > 5 && (
+        <div className="table-bottom-link"><span>Showing 5 of {visibleList.length} detected matches</span><button className="text-button" onClick={onViewAll}>See all subscriptions <Icon name="arrow" size={14} /></button></div>
       )}
-      {!compact && safeItems.length > 0 && (
-        <div className="table-bottom-link"><span>{query ? 'Showing ' + filteredItems.length + ' of ' + safeItems.length + ' matches' : 'Matches are estimates, not confirmed charges.'}</span><span><Icon name="shield" size={14} /> Stored only in this session</span></div>
+      {!compact && dismissedList.length > 0 && (
+        <div className="set-aside-bar">
+          <span><Icon name="info" size={15} />{dismissedList.length} set aside as not subscriptions; excluded from totals and insights.</span>
+          <button className="text-button" onClick={() => setShowSetAside((value) => !value)} aria-expanded={showSetAside}>{showSetAside ? 'Hide set-aside items' : 'Review set-aside items'}</button>
+        </div>
+      )}
+      {!compact && showSetAside && dismissedList.length > 0 && (
+        <ul className="set-aside-list">
+          {dismissedList.map((item, index) => {
+            const money = item.currency || currency;
+            return (
+              <li className="set-aside-item" key={item.streamKey || item.normalized || item.payee || String(index)}>
+                <span className={'merchant-avatar merchant-' + (index % 5)}>{String(item.catalog?.name || item.payee || '?').trim().charAt(0).toUpperCase()}</span>
+                <span className="set-aside-name">
+                  <strong>{item.catalog?.name || item.payee || 'Unknown merchant'}</strong>
+                  <small>{item.frequency} · {formatCurrency(item.estimatedMonthly, money)}/mo</small>
+                </span>
+                <button className="text-button" onClick={() => onDecide(item, 'dismissed')}>Restore</button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {!compact && (visibleList.length > 0 || dismissedList.length > 0) && (
+        <div className="table-bottom-link"><span>{query ? 'Showing ' + filteredItems.length + ' of ' + visibleList.length + ' matches' : 'Matches are estimates, not confirmed charges.'}</span><span><Icon name="shield" size={14} /> Stored only in this session</span></div>
       )}
     </section>
   );

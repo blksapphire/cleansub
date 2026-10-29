@@ -23,6 +23,7 @@ Rules for every Pro feature:
 
 ## Pricing (opinion, test it before building)
 
+- The app now ships a static **Plans & Pro** page: Free vs planned Pro, pricing TBA, no waitlist and no billing connected. It is the first demand signal; add capture only when the provider choice is settled.
 - Offer **monthly + annual** (annual discounted). Quarterly-only is an unusual, high-friction offer for a tool people use occasionally.
 - Selling a subscription to a subscription-finder invites an obvious objection. Make the recurring value concrete (alerts and history), not "unlock the detector".
 - Before any billing code: a pricing page or waitlist to see whether anyone clicks, and confirm provider eligibility and payout for Nigeria against the provider's *current* docs.

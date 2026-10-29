@@ -4,8 +4,10 @@ import Upload from './pages/Upload';
 import Subscriptions from './pages/Subscriptions';
 import Upcoming from './pages/Upcoming';
 import Insights from './pages/Insights';
+import Pricing from './pages/Pricing';
 import { formatTotals, isValidCurrency } from './lib/format';
 import { totalsByCurrency, isLikely, isSubscription } from './lib/insights';
+import { visibleItems, filterInsights, toggleDecision } from './lib/curate';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: 'grid' },
@@ -13,6 +15,12 @@ const navigation = [
   { id: 'upcoming', label: 'Upcoming charges', icon: 'calendar' },
   { id: 'insights', label: 'Spending insights', icon: 'chart' },
 ];
+
+const plansNavigation = [
+  { id: 'pricing', label: 'Plans & Pro', icon: 'wallet' },
+];
+
+const allNavigation = [...navigation, ...plansNavigation];
 
 const viewCopy = {
   overview: {
@@ -30,6 +38,10 @@ const viewCopy = {
   insights: {
     title: 'Know where it goes.',
     description: 'Simple insights built from the transactions you choose to import.',
+  },
+  pricing: {
+    title: 'Free today. Pro only when it earns its place.',
+    description: 'The local app stays complete. Paid alerts and history are planned, not built or charged for yet.',
   },
 };
 
@@ -52,11 +64,20 @@ export default function App() {
   const [lastImport, setLastImport] = useState('');
   const [currency, setCurrency] = useState('USD');
   const [detectedCurrency, setDetectedCurrency] = useState('');
+  const [decisions, setDecisions] = useState({});
 
-  const subscriptionItems = useMemo(() => subscriptions.filter(isSubscription), [subscriptions]);
+  const allSubscriptionItems = useMemo(() => subscriptions.filter(isSubscription), [subscriptions]);
+  const visibleList = useMemo(() => visibleItems(subscriptions, decisions), [subscriptions, decisions]);
+  const subscriptionItems = useMemo(() => visibleList.filter(isSubscription), [visibleList]);
   const likelyTotals = useMemo(() => totalsByCurrency(subscriptionItems, isLikely), [subscriptionItems]);
   const highConfidence = subscriptionItems.filter((item) => item.confidence === 'High').length;
-  const otherRecurring = subscriptions.length - subscriptionItems.length;
+  const otherRecurring = visibleList.length - subscriptionItems.length;
+  const setAside = subscriptions.length - visibleList.length;
+  const foundDetail = [
+    otherRecurring ? `${otherRecurring} other recurring charge${otherRecurring === 1 ? '' : 's'} kept separate` : '',
+    setAside ? `${setAside} set aside` : ''
+  ].filter(Boolean).join(' · ') || (subscriptionItems.length ? 'Potential recurring merchants' : 'Nothing tracked yet');
+  const visibleInsights = useMemo(() => filterInsights(insights, subscriptions, decisions), [insights, subscriptions, decisions]);
   const copy = viewCopy[activeView];
   const currencyOptions = useMemo(() => {
     const base = ['USD', 'NGN', 'GBP', 'EUR', 'CAD'];
@@ -70,10 +91,15 @@ export default function App() {
     setInsights(result.insights || null);
     setTransactionCount(result.transactionCount || 0);
     setLastImport(result.fileName || '');
+    setDecisions({});
     // A currency stated by the file wins over the default; mixed files keep each charge's own.
     const found = result.summary?.detectedCurrency || '';
     setDetectedCurrency(found);
     if (found && !result.summary?.mixedCurrencies && isValidCurrency(found)) setCurrency(found);
+  }
+
+  function handleDecide(item, next) {
+    setDecisions((current) => toggleDecision(current, item, next));
   }
 
   function goToImport() {
@@ -81,6 +107,21 @@ export default function App() {
     window.setTimeout(() => {
       document.getElementById('import-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 60);
+  }
+
+  function navItem(item) {
+    return (
+      <button
+        key={item.id}
+        className={'nav-item ' + (activeView === item.id ? 'active' : '')}
+        onClick={() => setActiveView(item.id)}
+        aria-current={activeView === item.id ? 'page' : undefined}
+      >
+        <Icon name={item.icon} size={18} />
+        <span>{item.label}</span>
+        {item.id === 'subscriptions' && subscriptionItems.length > 0 && <span className="nav-count">{subscriptionItems.length}</span>}
+      </button>
+    );
   }
 
   return (
@@ -93,18 +134,9 @@ export default function App() {
         <div className="workspace-label">PERSONAL WORKSPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
           <p className="nav-caption">YOUR MONEY</p>
-          {navigation.map((item) => (
-            <button
-              key={item.id}
-              className={'nav-item ' + (activeView === item.id ? 'active' : '')}
-              onClick={() => setActiveView(item.id)}
-              aria-current={activeView === item.id ? 'page' : undefined}
-            >
-              <Icon name={item.icon} size={18} />
-              <span>{item.label}</span>
-              {item.id === 'subscriptions' && subscriptionItems.length > 0 && <span className="nav-count">{subscriptionItems.length}</span>}
-            </button>
-          ))}
+          {navigation.map(navItem)}
+          <p className="nav-caption nav-caption-group">CLEANSUB</p>
+          {plansNavigation.map(navItem)}
         </nav>
 
         <div className="sidebar-spacer" />
@@ -125,7 +157,7 @@ export default function App() {
 
       <div className="main-shell">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><Icon name="chevron" size={14} /><strong>{navigation.find((item) => item.id === activeView)?.label || 'Overview'}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><Icon name="chevron" size={14} /><strong>{allNavigation.find((item) => item.id === activeView)?.label || 'Overview'}</strong></div>
           <div className="topbar-actions">
             <label className="currency-select">
               <span>Currency</span>
@@ -151,7 +183,7 @@ export default function App() {
             <>
               <div className="metrics-grid">
                 <MetricCard icon="repeat" tone="tone-green" label="Estimated monthly recurring" value={formatTotals(likelyTotals, currency)} detail={subscriptionItems.length ? 'Subscriptions only; likely matches' : 'Import a statement to begin'} />
-                <MetricCard icon="card" tone="tone-blue" label="Subscriptions found" value={subscriptionItems.length} detail={otherRecurring ? `${otherRecurring} other recurring charge${otherRecurring === 1 ? '' : 's'} kept separate` : subscriptionItems.length ? 'Potential recurring merchants' : 'Nothing tracked yet'} />
+                <MetricCard icon="card" tone="tone-blue" label="Subscriptions found" value={subscriptionItems.length} detail={foundDetail} />
                 <MetricCard icon="shield" tone="tone-violet" label="High-confidence matches" value={highConfidence} detail={subscriptionItems.length ? 'Worth reviewing first' : 'Built from repeat patterns'} />
                 <MetricCard icon="file" tone="tone-amber" label="Transactions reviewed" value={transactionCount.toLocaleString()} detail={lastImport ? 'Latest: ' + lastImport : 'Your statement stays local'} />
               </div>
@@ -174,35 +206,39 @@ export default function App() {
                   <p className="muted-copy">CleanSub spots patterns in your transaction history so you can decide which recurring payments are worth keeping.</p>
                   <div className="step-list">
                     <div className={'step-item ' + (transactionCount > 0 ? 'completed' : '')}><span className="step-number">{transactionCount > 0 ? <Icon name="check" size={15} /> : '1'}</span><span><strong>Import a statement</strong><small>CSV, Excel or a text-based PDF from your bank or card provider.</small></span></div>
-                    <div className={'step-item ' + (subscriptionItems.length > 0 ? 'completed' : '')}><span className="step-number">{subscriptionItems.length > 0 ? <Icon name="check" size={15} /> : '2'}</span><span><strong>Review detected patterns</strong><small>Check confidence, price changes and estimated monthly costs.</small></span></div>
+                    <div className={'step-item ' + (subscriptionItems.length > 0 ? 'completed' : '')}><span className="step-number">{subscriptionItems.length > 0 ? <Icon name="check" size={15} /> : '2'}</span><span><strong>Review detected patterns</strong><small>Keep the matches you recognise and set aside anything that is not a subscription.</small></span></div>
                     <div className="step-item"><span className="step-number">3</span><span><strong>Choose what stays</strong><small>Use each merchant's official settings, and add the renewal dates to your calendar.</small></span></div>
                   </div>
                   <div className="honesty-note"><Icon name="info" size={17} /><span>CleanSub identifies possible recurring charges. It does not cancel subscriptions or access your bank account.</span></div>
                 </section>
               </div>
 
-              <Subscriptions items={subscriptionItems} currency={currency} compact onViewAll={() => setActiveView('subscriptions')} onImport={goToImport} />
+              <Subscriptions items={allSubscriptionItems} currency={currency} decisions={decisions} onDecide={handleDecide} compact onViewAll={() => setActiveView('subscriptions')} onImport={goToImport} />
             </>
           )}
 
           {activeView === 'subscriptions' && (
             <>
               <div className="metrics-grid metrics-grid-three">
-                <MetricCard icon="repeat" tone="tone-green" label="Detected subscriptions" value={subscriptionItems.length} detail={otherRecurring ? `${otherRecurring} other recurring charge${otherRecurring === 1 ? '' : 's'} kept separate` : 'Potential recurring merchants'} />
+                <MetricCard icon="repeat" tone="tone-green" label="Detected subscriptions" value={subscriptionItems.length} detail={foundDetail} />
                 <MetricCard icon="wallet" tone="tone-blue" label="Estimated monthly total" value={formatTotals(likelyTotals, currency)} detail="High and medium matches; not a bill total" />
                 <MetricCard icon="shield" tone="tone-violet" label="High confidence" value={highConfidence} detail="Review these matches first" />
               </div>
-              <Subscriptions items={subscriptions} currency={currency} onImport={goToImport} />
+              <Subscriptions items={subscriptions} currency={currency} decisions={decisions} onDecide={handleDecide} onImport={goToImport} />
               <div className="bottom-import-cta"><div className="cta-icon"><Icon name="upload" size={20} /></div><div><strong>Have a newer statement?</strong><p>Import an updated statement to refresh your recurring-payment view.</p></div><button className="button button-secondary" onClick={goToImport}>Import statement <Icon name="arrow" size={15} /></button></div>
             </>
           )}
 
           {activeView === 'upcoming' && (
-            <Upcoming subscriptions={subscriptions} currency={currency} onImport={goToImport} />
+            <Upcoming subscriptions={visibleList} currency={currency} onImport={goToImport} />
           )}
 
           {activeView === 'insights' && (
-            <Insights subscriptions={subscriptionItems} insights={insights} currency={currency} onImport={goToImport} />
+            <Insights subscriptions={subscriptionItems} insights={visibleInsights} currency={currency} onImport={goToImport} />
+          )}
+
+          {activeView === 'pricing' && (
+            <Pricing onImport={goToImport} />
           )}
 
           <footer className="page-footer">

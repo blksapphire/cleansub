@@ -16,6 +16,7 @@ OFX/QFX and screenshots are not supported.
 
 - **Recurring detection** for weekly, fortnightly, monthly, every-two-months, quarterly, half-yearly and yearly cycles. Tolerates a missed billing cycle, treats one merchant billing several plans (Apple, Google Play, PayPal) as separate streams, and ignores per-transaction reference codes and processor prefixes such as `PAYPAL *`.
 - **Subscriptions vs transfers**: each repeat is classed as a subscription, a transfer to a person, a bank fee/levy, or another recurring charge. Narrations such as `TRANSFER TO NAME BANK *****123/TRF`, `MOB/UTO`, `Value Added Tax` and airtime are recognised, so recurring transfers and fees never inflate the subscription count or spend total. All kinds remain viewable behind filter chips.
+- **Curation**: mark a match as kept, or set it aside as not a subscription. Set-aside charges drop out of totals, insights and upcoming charges, and can be restored from the same page. Choices apply to the current import and reset when you import a new statement.
 - **Possible matches**: two identical charges a long cycle apart are shown as "Possible", kept out of the headline total.
 - **Price movement**: a one-off rise or fall is a *step*; a gradual one-way move is *drift* (price creep, or the exchange rate on a foreign-currency charge).
 - **Next-charge prediction** and an **.ics calendar export** (recurring all-day events with a reminder the day before). Built on your device.
@@ -25,6 +26,7 @@ OFX/QFX and screenshots are not supported.
 - **Currency**: read from a Currency column, a `Currency: NGN` line above the header, or amount symbols (₦, £, €, $). Different currencies are never added together.
 - **Duplicates** are flagged, never dropped; a flagged row is counted once for recurrence detection.
 - Parsing runs in a Web Worker so large files do not freeze the page.
+- **Plans page**: a static Free vs planned-Pro comparison. Pro is not priced, sold or connected to any server; see [docs/free-vs-pro.md](docs/free-vs-pro.md).
 
 ## Run locally
 

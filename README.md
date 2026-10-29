@@ -28,6 +28,10 @@ OFX/QFX and screenshots are not supported.
 - Parsing runs in a Web Worker so large files do not freeze the page.
 - **Plans page**: a static Free vs planned-Pro comparison. Pro is not priced, sold or connected to any server; see [docs/free-vs-pro.md](docs/free-vs-pro.md).
 
+## Interface
+
+The app uses a single dark theme (midnight navy with a mint accent); there is no light mode. On phones the five main views sit in a fixed bottom tab bar, and the subscriptions table becomes a card list so Keep, Set aside and Guide stay on screen. Larger screens use the sticky top navigation.
+
 ## Run locally
 
 Requires Node 20 or newer.

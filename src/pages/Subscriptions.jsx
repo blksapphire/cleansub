@@ -43,6 +43,83 @@ export function PriceBadge({ change, currency }) {
   );
 }
 
+function MerchantIdentity({ item, index, money, compact, isKept, kindLabel }) {
+  const name = item.catalog?.name || item.payee || 'Unknown merchant';
+  const category = item.catalog ? CATEGORY_LABELS[item.catalog.category] : '';
+  const meta = compact ? 'Recurring payment' : [category, kindLabel].filter(Boolean).join(' · ');
+  return (
+    <div className="merchant-cell">
+      <span className={'merchant-avatar merchant-' + (index % 5)}>{String(name).trim().charAt(0).toUpperCase()}</span>
+      <span className="merchant-info">
+        <strong>{name}{item.streamAmount !== undefined ? ' · ' + formatCurrency(item.streamAmount, money) : ''}</strong>
+        <small>{meta || item.payee}{isKept ? ' · Kept' : ''}</small>
+      </span>
+    </div>
+  );
+}
+
+function ConfidencePill({ value }) {
+  const confidence = value || 'Low';
+  return (
+    <span className={'confidence-pill confidence-' + confidence.toLowerCase()}><span />{confidenceLabel(confidence)}</span>
+  );
+}
+
+function DecisionButtons({ item, isKept, onDecide, labelled = false }) {
+  if (!onDecide) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className={'decision-button keep' + (isKept ? ' active' : '') + (labelled ? ' labelled' : '')}
+        onClick={() => onDecide(item, 'kept')}
+        aria-pressed={isKept}
+        aria-label={isKept ? 'Remove keep mark' : 'Keep this match'}
+        title={isKept ? 'Remove keep mark' : 'Mark as reviewed and keep'}
+      ><Icon name="check" size={14} />{labelled && <span>{isKept ? 'Kept' : 'Keep'}</span>}</button>
+      <button
+        type="button"
+        className={'decision-button dismiss' + (labelled ? ' labelled' : '')}
+        onClick={() => onDecide(item, 'dismissed')}
+        aria-label="Set aside as not a subscription"
+        title="Set aside as not a subscription"
+      ><Icon name="close" size={14} />{labelled && <span>Set aside</span>}</button>
+    </>
+  );
+}
+
+function GuideContent({ item, money }) {
+  const itemKind = kindOf(item);
+  return (
+    <>
+      <span className="guidance-icon"><Icon name="info" size={18} /></span>
+      <div className="guidance-copy">
+        <strong>{itemKind === 'subscription' ? `Before you change ${item.catalog?.name || item.payee || 'this subscription'}` : KIND_GUIDANCE[itemKind].heading}</strong>
+        <p>{itemKind === 'subscription'
+          ? "Confirm the charge in the merchant's official account or billing settings. If you don't recognize it, contact the merchant using a trusted website or phone number. For an unauthorized card charge, contact your bank or card provider."
+          : KIND_GUIDANCE[itemKind].body}</p>
+        {item.priceChange && (
+          <p className="guidance-flag"><Icon name="trend" size={14} /> {item.priceChange.kind === 'step'
+            ? `The charge went ${item.priceChange.direction === 'increase' ? 'up' : 'down'} ${formatPct(item.priceChange.pct)} (${formatCurrency(item.priceChange.from, money)} to ${formatCurrency(item.priceChange.to, money)}) from ${formatDate(item.priceChange.changeDate)}.`
+            : `The charge moved ${formatPct(item.priceChange.pct)} over ${item.count} payments (${formatCurrency(item.priceChange.from, money)} to ${formatCurrency(item.priceChange.to, money)}). On a foreign-currency charge this can simply be the exchange rate.`}</p>
+        )}
+        {item.trial && (
+          <p className="guidance-flag"><Icon name="alert" size={14} /> This began with a small {formatCurrency(item.trial.trialAmount, money)} charge on {formatDate(item.trial.trialDate)}, then {formatCurrency(item.trial.paidAmount, money)} {item.trial.daysBetween} days later. That pattern often means a trial became a paid plan.</p>
+        )}
+        {item.catalog?.cancelUrl && (
+          <a className="link-out" href={item.catalog.cancelUrl} target="_blank" rel="noopener noreferrer">Open {item.catalog.name}'s account page <Icon name="external" size={13} /></a>
+        )}
+        <small>CleanSub does not cancel payments or verify the merchant's cancellation policy. Links go to the merchant's own site and may change.</small>
+        {Array.isArray(item.reasons) && item.reasons.length > 0 && (
+          <ul className="detection-reasons">
+            {item.reasons.map((reason, reasonIndex) => <li key={reasonIndex}>{reason}</li>)}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
 export default function Subscriptions({ items = [], currency = 'USD', compact = false, decisions = {}, onDecide, onViewAll, onImport }) {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState('subscription');
@@ -67,7 +144,10 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
       : byKind;
     return compact ? filtered.slice(0, 5) : filtered;
   }, [visibleList, query, compact, activeKind]);
-  const colSpan = compact ? 4 : 7;
+  const desktopColumns = compact
+    ? ['Merchant or payee', 'Est. monthly', 'Confidence', 'Review']
+    : ['Merchant or payee', 'Est. monthly', 'Billing pattern', 'Next charge', 'Seen', 'Confidence', 'Review'];
+  const colSpan = desktopColumns.length;
 
   return (
     <section className={'panel subscriptions-panel ' + (compact ? 'compact-subscriptions' : '')}>
@@ -135,118 +215,111 @@ export default function Subscriptions({ items = [], currency = 'USD', compact = 
       ) : filteredItems.length === 0 ? (
         <div className="no-search-results"><Icon name="search" size={19} /><span>No merchants match “{query}”. Try another name.</span></div>
       ) : (
-        <div className="table-scroll">
-          <table className="data-table subscriptions-table">
-            <thead>
-              <tr>
-                <th>Merchant or payee</th>
-                <th>Est. monthly</th>
-                {!compact && <th>Billing pattern</th>}
-                {!compact && <th>Next charge</th>}
-                {!compact && <th>Seen</th>}
-                <th>Confidence</th>
-                <th className="actions-column">Review</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredItems.map((item, index) => {
-                const key = item.streamKey || item.normalized || item.payee || String(index);
-                const confidence = item.confidence || 'Low';
-                const isOpen = openHelp === key;
-                const money = item.currency || currency;
-                const next = compact ? null : nextCharge(item);
-                const category = item.catalog ? CATEGORY_LABELS[item.catalog.category] : '';
-                const itemKind = kindOf(item);
-                const meta = [category, itemKind !== 'subscription' ? KIND_LABELS[itemKind] : ''].filter(Boolean).join(' · ');
-                const isKept = decisionFor(item, decisions) === 'kept';
-                return (
-                  <React.Fragment key={key}>
-                    <tr className={[isOpen ? 'row-open' : '', isKept ? 'row-kept' : ''].filter(Boolean).join(' ')}>
-                      <td>
-                        <div className="merchant-cell">
-                          <span className={'merchant-avatar merchant-' + (index % 5)}>{String(item.catalog?.name || item.payee || '?').trim().charAt(0).toUpperCase()}</span>
-                          <span className="merchant-info">
-                            <strong>{item.catalog?.name || item.payee || 'Unknown merchant'}{item.streamAmount !== undefined ? ' · ' + formatCurrency(item.streamAmount, money) : ''}</strong>
-                            <small>{compact ? 'Recurring payment' : (meta || item.payee)}{isKept ? ' · Kept' : ''}</small>
-                          </span>
-                        </div>
-                      </td>
-                      <td>
-                        <strong className="amount-cell">{formatCurrency(item.estimatedMonthly, money)}</strong>
-                        <small className="table-subtext">per month, est. <PriceBadge change={item.priceChange} currency={money} /></small>
-                      </td>
-                      {!compact && <td><span className="interval-cell"><Icon name="clock" size={14} />{item.frequency}</span></td>}
-                      {!compact && (
-                        <td className="next-cell">
-                          {next ? <><strong>{formatDate(next.date)}</strong>{next.projectedFromOldData && <small className="table-subtext">projected</small>}</> : '—'}
+        <>
+          <div className="table-scroll subscriptions-table-wrap">
+            <table className="data-table subscriptions-table">
+              <thead>
+                <tr>
+                  {desktopColumns.map((column) => (
+                    <th key={column} className={column === 'Review' ? 'actions-column' : undefined}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredItems.map((item, index) => {
+                  const key = item.streamKey || item.normalized || item.payee || String(index);
+                  const confidence = item.confidence || 'Low';
+                  const isOpen = openHelp === key;
+                  const money = item.currency || currency;
+                  const next = compact ? null : nextCharge(item);
+                  const itemKind = kindOf(item);
+                  const kindLabel = itemKind !== 'subscription' ? KIND_LABELS[itemKind] : '';
+                  const isKept = decisionFor(item, decisions) === 'kept';
+                  return (
+                    <React.Fragment key={key}>
+                      <tr className={[isOpen ? 'row-open' : '', isKept ? 'row-kept' : ''].filter(Boolean).join(' ')}>
+                        <td>
+                          <MerchantIdentity item={item} index={index} money={money} compact={compact} isKept={isKept} kindLabel={kindLabel} />
                         </td>
-                      )}
-                      {!compact && <td className="occurrences-cell">{item.count || 0} <span>times</span></td>}
-                      <td><span className={'confidence-pill confidence-' + confidence.toLowerCase()}><span />{confidenceLabel(confidence)}</span></td>
-                      <td className="actions-column">
-                        <div className="row-actions">
-                          {onDecide && (
-                            <>
-                              <button
-                                type="button"
-                                className={'decision-button keep' + (isKept ? ' active' : '')}
-                                onClick={() => onDecide(item, 'kept')}
-                                aria-pressed={isKept}
-                                aria-label={isKept ? 'Remove keep mark' : 'Keep this match'}
-                                title={isKept ? 'Remove keep mark' : 'Mark as reviewed and keep'}
-                              ><Icon name="check" size={14} /></button>
-                              <button
-                                type="button"
-                                className="decision-button dismiss"
-                                onClick={() => onDecide(item, 'dismissed')}
-                                aria-label="Set aside as not a subscription"
-                                title="Set aside as not a subscription"
-                              ><Icon name="close" size={14} /></button>
-                            </>
-                          )}
-                          <button className={'row-action ' + (isOpen ? 'is-open' : '')} onClick={() => setOpenHelp(isOpen ? null : key)} aria-expanded={isOpen}>{isOpen ? 'Hide' : 'Guide'}<Icon name="chevron" size={14} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="guidance-row">
-                        <td colSpan={colSpan}>
-                          <div className="guidance-content">
-                            <span className="guidance-icon"><Icon name="info" size={18} /></span>
-                            <div className="guidance-copy">
-                              <strong>{itemKind === 'subscription' ? `Before you change ${item.catalog?.name || item.payee || 'this subscription'}` : KIND_GUIDANCE[itemKind].heading}</strong>
-                              <p>{itemKind === 'subscription'
-                                ? "Confirm the charge in the merchant's official account or billing settings. If you don't recognize it, contact the merchant using a trusted website or phone number. For an unauthorized card charge, contact your bank or card provider."
-                                : KIND_GUIDANCE[itemKind].body}</p>
-                              {item.priceChange && (
-                                <p className="guidance-flag"><Icon name="trend" size={14} /> {item.priceChange.kind === 'step'
-                                  ? `The charge went ${item.priceChange.direction === 'increase' ? 'up' : 'down'} ${formatPct(item.priceChange.pct)} (${formatCurrency(item.priceChange.from, money)} to ${formatCurrency(item.priceChange.to, money)}) from ${formatDate(item.priceChange.changeDate)}.`
-                                  : `The charge moved ${formatPct(item.priceChange.pct)} over ${item.count} payments (${formatCurrency(item.priceChange.from, money)} to ${formatCurrency(item.priceChange.to, money)}). On a foreign-currency charge this can simply be the exchange rate.`}</p>
-                              )}
-                              {item.trial && (
-                                <p className="guidance-flag"><Icon name="alert" size={14} /> This began with a small {formatCurrency(item.trial.trialAmount, money)} charge on {formatDate(item.trial.trialDate)}, then {formatCurrency(item.trial.paidAmount, money)} {item.trial.daysBetween} days later. That pattern often means a trial became a paid plan.</p>
-                              )}
-                              {item.catalog?.cancelUrl && (
-                                <a className="link-out" href={item.catalog.cancelUrl} target="_blank" rel="noopener noreferrer">Open {item.catalog.name}'s account page <Icon name="external" size={13} /></a>
-                              )}
-                              <small>CleanSub does not cancel payments or verify the merchant's cancellation policy. Links go to the merchant's own site and may change.</small>
-                              {Array.isArray(item.reasons) && item.reasons.length > 0 && (
-                                <ul className="detection-reasons">
-                                  {item.reasons.map((reason, reasonIndex) => <li key={reasonIndex}>{reason}</li>)}
-                                </ul>
-                              )}
-                            </div>
+                        <td>
+                          <strong className="amount-cell">{formatCurrency(item.estimatedMonthly, money)}</strong>
+                          <small className="table-subtext">per month, est. <PriceBadge change={item.priceChange} currency={money} /></small>
+                        </td>
+                        {!compact && <td><span className="interval-cell"><Icon name="clock" size={14} />{item.frequency}</span></td>}
+                        {!compact && (
+                          <td className="next-cell">
+                            {next ? <><strong>{formatDate(next.date)}</strong>{next.projectedFromOldData && <small className="table-subtext">projected</small>}</> : '—'}
+                          </td>
+                        )}
+                        {!compact && <td className="occurrences-cell">{item.count || 0} <span>times</span></td>}
+                        <td><ConfidencePill value={confidence} /></td>
+                        <td className="actions-column">
+                          <div className="row-actions">
+                            <DecisionButtons item={item} isKept={isKept} onDecide={onDecide} />
+                            <button className={'row-action ' + (isOpen ? 'is-open' : '')} onClick={() => setOpenHelp(isOpen ? null : key)} aria-expanded={isOpen}>{isOpen ? 'Hide' : 'Guide'}<Icon name="chevron" size={14} /></button>
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      {isOpen && (
+                        <tr className="guidance-row">
+                          <td colSpan={colSpan}>
+                            <div className="guidance-content">
+                              <GuideContent item={item} money={money} />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <ul className="subscription-cards">
+            {filteredItems.map((item, index) => {
+              const key = item.streamKey || item.normalized || item.payee || String(index);
+              const confidence = item.confidence || 'Low';
+              const isOpen = openHelp === key;
+              const money = item.currency || currency;
+              const next = nextCharge(item);
+              const itemKind = kindOf(item);
+              const kindLabel = itemKind !== 'subscription' ? KIND_LABELS[itemKind] : '';
+              const isKept = decisionFor(item, decisions) === 'kept';
+              return (
+                <li className={'sub-card' + (isOpen ? ' is-open' : '') + (isKept ? ' is-kept' : '')} key={key}>
+                  <div className="sub-card-head">
+                    <MerchantIdentity item={item} index={index} money={money} compact={compact} isKept={isKept} kindLabel={kindLabel} />
+                    <span className="sub-card-money">
+                      <strong className="amount-cell">{formatCurrency(item.estimatedMonthly, money)}</strong>
+                      <span className="sub-card-cadence">per month, est.</span>
+                    </span>
+                  </div>
+                  <div className="sub-card-facts">
+                    <span><Icon name="clock" size={13} />{item.frequency}</span>
+                    {next && <span><Icon name="calendar" size={13} />{formatDate(next.date)}{next.projectedFromOldData ? ' · projected' : ''}</span>}
+                    <span><Icon name="repeat" size={13} />{item.count || 0} seen</span>
+                    <ConfidencePill value={confidence} />
+                    <PriceBadge change={item.priceChange} currency={money} />
+                  </div>
+                  <div className="sub-card-actions">
+                    <DecisionButtons item={item} isKept={isKept} onDecide={onDecide} labelled />
+                    <button className={'row-action ' + (isOpen ? 'is-open' : '')} onClick={() => setOpenHelp(isOpen ? null : key)} aria-expanded={isOpen}>{isOpen ? 'Hide guide' : 'Guide'}<Icon name="chevron" size={14} /></button>
+                  </div>
+                  {isOpen && (
+                    <div className="guide-inline">
+                      <div className="guidance-content">
+                        <GuideContent item={item} money={money} />
+                      </div>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
+
       {compact && visibleList.length > 5 && (
         <div className="table-bottom-link"><span>Showing 5 of {visibleList.length} detected matches</span><button className="text-button" onClick={onViewAll}>See all subscriptions <Icon name="arrow" size={14} /></button></div>
       )}

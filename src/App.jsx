@@ -5,19 +5,20 @@ import Subscriptions from './pages/Subscriptions';
 import Upcoming from './pages/Upcoming';
 import Insights from './pages/Insights';
 import Pricing from './pages/Pricing';
-import { formatTotals, isValidCurrency } from './lib/format';
+import { formatCurrency, formatDate, formatTotals, isValidCurrency } from './lib/format';
 import { totalsByCurrency, isLikely, isSubscription } from './lib/insights';
 import { visibleItems, filterInsights, toggleDecision } from './lib/curate';
+import { upcomingCharges, todayIso } from './lib/schedule';
 
 const navigation = [
-  { id: 'overview', label: 'Overview', icon: 'grid' },
-  { id: 'subscriptions', label: 'Subscriptions', icon: 'repeat' },
-  { id: 'upcoming', label: 'Upcoming charges', icon: 'calendar' },
-  { id: 'insights', label: 'Spending insights', icon: 'chart' },
+  { id: 'overview', label: 'Overview', tab: 'Overview', short: 'Overview', icon: 'grid' },
+  { id: 'subscriptions', label: 'Subscriptions', tab: 'Subscriptions', short: 'Subs', icon: 'repeat' },
+  { id: 'upcoming', label: 'Upcoming charges', tab: 'Upcoming', short: 'Upcoming', icon: 'calendar' },
+  { id: 'insights', label: 'Spending insights', tab: 'Insights', short: 'Insights', icon: 'chart' },
 ];
 
 const plansNavigation = [
-  { id: 'pricing', label: 'Plans & Pro', icon: 'wallet' },
+  { id: 'pricing', label: 'Plans & Pro', tab: 'Plans & Pro', short: 'Plans', icon: 'wallet' },
 ];
 
 const allNavigation = [...navigation, ...plansNavigation];
@@ -44,6 +45,29 @@ const viewCopy = {
     description: 'The local app stays complete. Paid alerts and history are planned, not built or charged for yet.',
   },
 };
+
+const DAY_MS = 86400000;
+
+function greetingFor(now = new Date()) {
+  const hour = now.getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function daysUntil(iso, fromIso) {
+  const parse = (value) => {
+    const [y, m, d] = value.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((parse(iso) - parse(fromIso)) / DAY_MS);
+}
+
+function relativeDay(days) {
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  return `In ${days} days`;
+}
 
 function MetricCard({ icon, label, value, detail, tone }) {
   return (
@@ -79,12 +103,23 @@ export default function App() {
   ].filter(Boolean).join(' · ') || (subscriptionItems.length ? 'Potential recurring merchants' : 'Nothing tracked yet');
   const visibleInsights = useMemo(() => filterInsights(insights, subscriptions, decisions), [insights, subscriptions, decisions]);
   const copy = viewCopy[activeView];
+  const today = todayIso();
+  const greeting = greetingFor();
   const currencyOptions = useMemo(() => {
     const base = ['USD', 'NGN', 'GBP', 'EUR', 'CAD'];
     return detectedCurrency && !base.includes(detectedCurrency) && isValidCurrency(detectedCurrency)
       ? [...base, detectedCurrency]
       : base;
   }, [detectedCurrency]);
+
+  const nextThirty = useMemo(() => {
+    const charges = upcomingCharges(subscriptionItems, todayIso(), 30);
+    const totals = totalsByCurrency(
+      charges.map((charge) => ({ currency: charge.result.currency, estimatedMonthly: charge.amount }))
+    );
+    return { charges, totals };
+  }, [subscriptionItems]);
+  const nextChargePreview = nextThirty.charges[0] || null;
 
   function handleImportResult(result) {
     setSubscriptions(result.subscriptions || []);
@@ -109,95 +144,153 @@ export default function App() {
     }, 60);
   }
 
-  function navItem(item) {
-    return (
-      <button
-        key={item.id}
-        className={'nav-item ' + (activeView === item.id ? 'active' : '')}
-        onClick={() => setActiveView(item.id)}
-        aria-current={activeView === item.id ? 'page' : undefined}
-      >
-        <Icon name={item.icon} size={18} />
-        <span>{item.label}</span>
-        {item.id === 'subscriptions' && subscriptionItems.length > 0 && <span className="nav-count">{subscriptionItems.length}</span>}
-      </button>
-    );
-  }
-
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand" href="#overview" onClick={(event) => { event.preventDefault(); setActiveView('overview'); }}>
-          <span className="brand-mark"><Icon name="sparkles" size={21} strokeWidth={2} /></span>
-          <span className="brand-name">cleansub<span>.</span></span>
-        </a>
-        <div className="workspace-label">PERSONAL WORKSPACE</div>
-        <nav className="side-nav" aria-label="Main navigation">
-          <p className="nav-caption">YOUR MONEY</p>
-          {navigation.map(navItem)}
-          <p className="nav-caption nav-caption-group">CLEANSUB</p>
-          {plansNavigation.map(navItem)}
-        </nav>
+      <header className="topnav">
+        <div className="topnav-inner">
+          <a className="brand" href="#overview" onClick={(event) => { event.preventDefault(); setActiveView('overview'); }} aria-label="CleanSub overview">
+            <span className="brand-mark"><Icon name="sparkles" size={19} strokeWidth={2} /></span>
+            <span className="brand-name">cleansub<span>.</span></span>
+          </a>
 
-        <div className="sidebar-spacer" />
-        <div className="privacy-card">
-          <span className="privacy-icon"><Icon name="shield" size={18} /></span>
-          <div>
-            <strong>Your data stays yours</strong>
-            <p>Statements are processed in your browser. The page is configured to talk to no other site.</p>
-          </div>
-          <span className="privacy-status"><span /> Local-only</span>
-        </div>
-        <div className="sidebar-footer">
-          <div className="workspace-avatar">C</div>
-          <div className="footer-user"><strong>Personal workspace</strong><span>Private by design</span></div>
-          <span className="local-indicator" title="Local-first app"><span /></span>
-        </div>
-      </aside>
+          <nav className="desktop-nav" aria-label="Main navigation">
+            {allNavigation.map((item) => (
+              <button
+                key={item.id}
+                className={'nav-item' + (activeView === item.id ? ' active' : '')}
+                onClick={() => setActiveView(item.id)}
+                aria-current={activeView === item.id ? 'page' : undefined}
+              >
+                <Icon name={item.icon} size={17} />
+                <span>{item.tab}</span>
+                {item.id === 'subscriptions' && subscriptionItems.length > 0 && <span className="nav-count">{subscriptionItems.length}</span>}
+              </button>
+            ))}
+          </nav>
 
-      <div className="main-shell">
-        <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><Icon name="chevron" size={14} /><strong>{allNavigation.find((item) => item.id === activeView)?.label || 'Overview'}</strong></div>
-          <div className="topbar-actions">
+          <div className="topnav-tools">
+            <span className="local-chip"><span className="live-dot" />Local-only</span>
             <label className="currency-select">
               <span>Currency</span>
               <select value={currency} onChange={(event) => setCurrency(event.target.value)} aria-label="Display currency">
                 {currencyOptions.map((code) => <option key={code} value={code}>{code}</option>)}
               </select>
             </label>
-            <button className="button button-primary top-import" onClick={goToImport}><Icon name="upload" size={17} /><span>Import statement</span></button>
+            <button className="button button-primary top-import" onClick={goToImport} aria-label="Import statement">
+              <Icon name="upload" size={17} /><span className="button-label">Import statement</span>
+            </button>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <main className="page-content">
+      <main className="page-content">
+        {activeView === 'overview' ? (
+          <section className="hero-panel">
+            <div className="hero-main">
+              <p className="eyebrow">{greeting} · Your clean slate</p>
+              <h1>{subscriptionItems.length ? 'Your recurring spend, at a glance.' : 'See every subscription in one quiet place.'}</h1>
+              <p className="hero-copy">CleanSub finds repeating charges in your statement, so you can keep what matters and set aside the rest. Everything runs on this device.</p>
+              <div className="hero-amount-row">
+                <div>
+                  <span className="hero-amount-label">Estimated monthly recurring</span>
+                  <p className={'hero-amount' + (likelyTotals.length > 1 ? ' multi' : '')}>{formatTotals(likelyTotals, currency)}<span className="hero-per">/mo</span></p>
+                </div>
+              </div>
+              <div className="hero-actions">
+                <button className="button button-primary" onClick={goToImport}><Icon name="upload" size={17} /> Import statement</button>
+                <span className="local-chip hero-local"><span className="live-dot" /> Processed on this device</span>
+              </div>
+            </div>
+            <aside className="hero-aside">
+              <div className="hero-aside-card">
+                <div>
+                  <p className="hero-aside-label">Next 30 days</p>
+                  <p className="hero-aside-value">{nextThirty.charges.length}</p>
+                  <p className="hero-aside-copy">
+                    {nextThirty.charges.length
+                      ? `${formatTotals(nextThirty.totals, currency)} expected across ${nextThirty.charges.length === 1 ? 'one charge' : nextThirty.charges.length + ' charges'}.`
+                      : 'Import a statement to see predicted renewals.'}
+                  </p>
+                </div>
+                {nextChargePreview && (
+                  <div className="hero-next">
+                    <span className="hero-aside-label">Next charge</span>
+                    <strong>{nextChargePreview.result.catalog?.name || nextChargePreview.result.payee}</strong>
+                    <small>{formatDate(nextChargePreview.date)} · {formatCurrency(nextChargePreview.amount, nextChargePreview.result.currency || currency)}</small>
+                  </div>
+                )}
+                <div className="hero-aside-foot">
+                  <Icon name="shield" size={15} />
+                  <span>Statement data never leaves this browser</span>
+                </div>
+              </div>
+            </aside>
+          </section>
+        ) : (
           <div className="page-heading">
             <div>
-              <p className="eyebrow">A LITTLE MORE FINANCIAL CLARITY</p>
+              <p className="eyebrow">CleanSub · {allNavigation.find((item) => item.id === activeView)?.label}</p>
               <h1>{copy.title}</h1>
               <p className="page-description">{copy.description}</p>
             </div>
             <div className="page-status"><span className="status-check"><Icon name="check" size={15} /></span><span><strong>Private by default</strong><small>Processed on this device</small></span></div>
           </div>
+        )}
 
-          {activeView === 'overview' && (
-            <>
-              <div className="metrics-grid">
-                <MetricCard icon="repeat" tone="tone-green" label="Estimated monthly recurring" value={formatTotals(likelyTotals, currency)} detail={subscriptionItems.length ? 'Subscriptions only; likely matches' : 'Import a statement to begin'} />
-                <MetricCard icon="card" tone="tone-blue" label="Subscriptions found" value={subscriptionItems.length} detail={foundDetail} />
-                <MetricCard icon="shield" tone="tone-violet" label="High-confidence matches" value={highConfidence} detail={subscriptionItems.length ? 'Worth reviewing first' : 'Built from repeat patterns'} />
-                <MetricCard icon="file" tone="tone-amber" label="Transactions reviewed" value={transactionCount.toLocaleString()} detail={lastImport ? 'Latest: ' + lastImport : 'Your statement stays local'} />
+        {activeView === 'overview' && (
+          <>
+            <div className="metrics-grid metrics-grid-three">
+              <MetricCard icon="repeat" tone="tone-green" label="Subscriptions found" value={subscriptionItems.length} detail={foundDetail} />
+              <MetricCard icon="shield" tone="tone-violet" label="High-confidence matches" value={highConfidence} detail={subscriptionItems.length ? 'Worth reviewing first' : 'Built from repeat patterns'} />
+              <MetricCard icon="file" tone="tone-amber" label="Transactions reviewed" value={transactionCount.toLocaleString()} detail={lastImport ? 'Latest: ' + lastImport : 'Your statement stays local'} />
+            </div>
+
+            {lastImport && (
+              <div className="import-success-strip">
+                <span className="success-symbol"><Icon name="check" size={15} /></span>
+                <span><strong>Statement reviewed</strong><small>{lastImport} · {transactionCount.toLocaleString()} transactions processed on this device</small></span>
+                <button className="text-button" onClick={goToImport}>Import another</button>
               </div>
+            )}
 
-              {lastImport && (
-                <div className="import-success-strip">
-                  <span className="success-symbol"><Icon name="check" size={15} /></span>
-                  <span><strong>Statement reviewed</strong><small>{lastImport} · {transactionCount.toLocaleString()} transactions processed on this device</small></span>
-                  <button className="text-button" onClick={goToImport}>Import another</button>
-                </div>
-              )}
-
-              <div className="content-grid overview-grid">
-                <Upload onResult={handleImportResult} />
+            <div className={'content-grid overview-grid' + (subscriptionItems.length ? ' has-import' : '')}>
+              <Upload onResult={handleImportResult} />
+              {subscriptionItems.length ? (
+                <section className="panel upcoming-preview-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">NEXT 30 DAYS</p>
+                      <h2>Upcoming renewals</h2>
+                      <p className="panel-subtitle">Predicted from each charge's rhythm — estimates, not bills.</p>
+                    </div>
+                    <button className="text-button" onClick={() => setActiveView('upcoming')}>View timeline <Icon name="chevron" size={14} /></button>
+                  </div>
+                  {nextThirty.charges.length ? (
+                    <ul className="renewal-preview-list">
+                      {nextThirty.charges.slice(0, 3).map((charge, index) => {
+                        const result = charge.result;
+                        const [day, month] = formatDate(charge.date).split(' ');
+                        return (
+                          <li className="renewal-preview-item" key={(result.streamKey || result.normalized || result.payee) + charge.date + index}>
+                            <span className="renewal-date"><strong>{day}</strong><small>{month}</small></span>
+                            <span className="renewal-info">
+                              <strong>{result.catalog?.name || result.payee}</strong>
+                              <small>{relativeDay(daysUntil(charge.date, today))} · {result.frequency}</small>
+                            </span>
+                            <span className="renewal-amount">
+                              <strong>{formatCurrency(charge.amount, result.currency || currency)}</strong>
+                              <small>{result.confidence}</small>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <div className="preview-empty"><Icon name="calendar" size={22} /><span>No predicted renewals in the next 30 days.</span></div>
+                  )}
+                  <div className="honesty-note"><Icon name="info" size={16} /><span>Dates are projected from past charges. Check the merchant before relying on them.</span></div>
+                </section>
+              ) : (
                 <section className="panel getting-started-panel">
                   <div className="panel-heading">
                     <div><p className="eyebrow">YOUR NEXT STEP</p><h2>Make every charge count</h2></div>
@@ -211,42 +304,60 @@ export default function App() {
                   </div>
                   <div className="honesty-note"><Icon name="info" size={17} /><span>CleanSub identifies possible recurring charges. It does not cancel subscriptions or access your bank account.</span></div>
                 </section>
-              </div>
+              )}
+            </div>
 
-              <Subscriptions items={allSubscriptionItems} currency={currency} decisions={decisions} onDecide={handleDecide} compact onViewAll={() => setActiveView('subscriptions')} onImport={goToImport} />
-            </>
-          )}
+            <Subscriptions items={allSubscriptionItems} currency={currency} decisions={decisions} onDecide={handleDecide} compact onViewAll={() => setActiveView('subscriptions')} onImport={goToImport} />
+          </>
+        )}
 
-          {activeView === 'subscriptions' && (
-            <>
-              <div className="metrics-grid metrics-grid-three">
-                <MetricCard icon="repeat" tone="tone-green" label="Detected subscriptions" value={subscriptionItems.length} detail={foundDetail} />
-                <MetricCard icon="wallet" tone="tone-blue" label="Estimated monthly total" value={formatTotals(likelyTotals, currency)} detail="High and medium matches; not a bill total" />
-                <MetricCard icon="shield" tone="tone-violet" label="High confidence" value={highConfidence} detail="Review these matches first" />
-              </div>
-              <Subscriptions items={subscriptions} currency={currency} decisions={decisions} onDecide={handleDecide} onImport={goToImport} />
-              <div className="bottom-import-cta"><div className="cta-icon"><Icon name="upload" size={20} /></div><div><strong>Have a newer statement?</strong><p>Import an updated statement to refresh your recurring-payment view.</p></div><button className="button button-secondary" onClick={goToImport}>Import statement <Icon name="arrow" size={15} /></button></div>
-            </>
-          )}
+        {activeView === 'subscriptions' && (
+          <>
+            <div className="metrics-grid metrics-grid-three">
+              <MetricCard icon="repeat" tone="tone-green" label="Detected subscriptions" value={subscriptionItems.length} detail={foundDetail} />
+              <MetricCard icon="wallet" tone="tone-blue" label="Estimated monthly total" value={formatTotals(likelyTotals, currency)} detail="High and medium matches; not a bill total" />
+              <MetricCard icon="shield" tone="tone-violet" label="High confidence" value={highConfidence} detail="Review these matches first" />
+            </div>
+            <Subscriptions items={subscriptions} currency={currency} decisions={decisions} onDecide={handleDecide} onImport={goToImport} />
+            <div className="bottom-import-cta"><div className="cta-icon"><Icon name="upload" size={20} /></div><div><strong>Have a newer statement?</strong><p>Import an updated statement to refresh your recurring-payment view.</p></div><button className="button button-secondary" onClick={goToImport}>Import statement <Icon name="arrow" size={15} /></button></div>
+          </>
+        )}
 
-          {activeView === 'upcoming' && (
-            <Upcoming subscriptions={visibleList} currency={currency} onImport={goToImport} />
-          )}
+        {activeView === 'upcoming' && (
+          <Upcoming subscriptions={visibleList} currency={currency} onImport={goToImport} />
+        )}
 
-          {activeView === 'insights' && (
-            <Insights subscriptions={subscriptionItems} insights={visibleInsights} currency={currency} onImport={goToImport} />
-          )}
+        {activeView === 'insights' && (
+          <Insights subscriptions={subscriptionItems} insights={visibleInsights} currency={currency} onImport={goToImport} />
+        )}
 
-          {activeView === 'pricing' && (
-            <Pricing onImport={goToImport} />
-          )}
+        {activeView === 'pricing' && (
+          <Pricing onImport={goToImport} />
+        )}
 
-          <footer className="page-footer">
-            <span>CleanSub <span className="footer-dot">·</span> Built for a clearer view of your money.</span>
-            <span><Icon name="shield" size={14} /> Your financial data stays on your device.</span>
-          </footer>
-        </main>
-      </div>
+        <footer className="page-footer">
+          <span>CleanSub <span className="footer-dot">·</span> Built for a clearer view of your money.</span>
+          <span><Icon name="shield" size={14} /> Your financial data stays on your device.</span>
+        </footer>
+      </main>
+
+      <nav className="bottom-nav" aria-label="Main navigation">
+        {allNavigation.map((item) => (
+          <button
+            key={item.id}
+            className={'bottom-nav-item' + (activeView === item.id ? ' active' : '')}
+            onClick={() => setActiveView(item.id)}
+            aria-current={activeView === item.id ? 'page' : undefined}
+            aria-label={item.label}
+          >
+            <span className="bottom-icon">
+              <Icon name={item.icon} size={19} />
+              {item.id === 'subscriptions' && subscriptionItems.length > 0 && <span className="bottom-badge">{subscriptionItems.length > 99 ? '99+' : subscriptionItems.length}</span>}
+            </span>
+            <span>{item.short}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
